@@ -893,3 +893,76 @@ Error/gain_denoiser   = d_before - d_after
 | `Error/q_auroc_mask` | **0.68**（对 mask 的无阈值 AUROC，初始化即远离 0.5） |
 | `Error/d_input` / `d_after` | 0.0428 / 0.0428（gate 近恒等，符合设计） |
 | `Error/gain_total` | ≈ 0（fp32 噪声级） |
+
+---
+
+## 17. 第六轮：五轮修复之后的诚实状态（2026-10-04）
+
+前五轮修的都是"基础设施"和"接线"问题。这一节记录**修完之后的真实状态**，包括**尚未解决的主线问题**。
+
+### 17.1 已经确定修好、有实测断言的
+
+| 项 | 断言 / 证据 |
+|---|---|
+| denoiser 死噪声 | 坏 token 处噪声 std / 健康 token 处 = **98.2×**（此前恒为 0） |
+| 优化器覆盖与 LR 路由 | **1406/1406**，8 组，1 维参数 `wd=0` 且 LR 正确 |
+| `base_prior` 不再被丢弃 | 1405/1406 → **1406/1406** |
+| S1 真冻结 GOLA | 真跑 optimizer 只有 **73–97** 个 `codetrack.*`，**0** 个 `blocks.*`/`head.*`/`lora` |
+| update 作为时间轴 | 真跑打印 `[stage] update budget reached; stopping after epoch 9` |
+| cosine 完整走完 | S0 最终 `lr = 1.000e-06`（= `lr_min`） |
+| 四阶段 optimizer scope 各不相同 | preflight 实测：S1=73、S2=1382、S3>1382（含 blocks.10/11 基础权重）、S4=1406（含 motion 24 个） |
+| S4 重新冻结主干 | S4 的 optimizer 里 `blocks.*` 非 LoRA 参数 **0 个** |
+| AMP 下不再崩 | BCE 改 `*_with_logits`；`samples_per_epoch`、`q_logits` 通路补齐 |
+| `Loss/pres` 锚点口径 | **0.95 → 0.0001**（锚在"恢复未选中的 token"） |
+| 判据可用 | 无阈值 `AUROC/AUPRC(q, mask)` + `q_std/q_pos_mean/q_neg_mean` + `d_input/d_before/d_after` |
+| 恒等性 | `max|Δscore_map| = 1.15e-4` |
+| 因果性 / LoRA / 互补性 | 6/6、1296/1296 且主干 0 漂移、17/17 |
+| 综合门 | `tools/preflight_acceptance.py` **101 项** |
+
+### 17.2 ★ 尚未解决的主线问题：恢复分支产不出正向效果
+
+**定义**（这是"恢复有效"的唯一判据）：`d_final < d_input`，其中
+`d_* = 1 - cos(·, X_clean)`，只在 `corruption_mask` 为真的 token 上统计。
+
+三个独立实验，结论一致：
+
+| 实验 | 规模 | `d_input` | `d_before` | `d_after` | `gain_total` |
+|---|---|---:|---:|---:|---:|
+| 10 序列快速验证 | 20 updates | 0.0462 | 0.0462 | 0.0462 | **0.0000** |
+| A 臂消融（合成固定 batch） | 600 updates | 0.119 | 0.119 | 0.141 | **−0.022** |
+| S0 真跑（全量 LasHeR） | 512 updates | 0.0179 | — | 0.2472 | **−0.2303** |
+
+同时**诊断头确实在学**：`q_auroc_mask` 0.56 → 0.69（20 updates）、`Loss/diag` 0.43 → 0.23。
+所以问题**只在恢复（refiner）与精修（denoiser）**，不在诊断。
+
+**gate 不是主因**：A 臂 600 步里 `residual_gate` 只从 `−8.0001` 走到 `−7.9613`
+（`sigmoid` 仍是 `3.5e-4`，等于没开），所以 0.19 的角距离增量**不可能来自 gate 放大**。
+
+**三种互斥的可能，尚未区分**（接手后第一件事）：
+
+1. **gate 没开** —— 写回被 `sigmoid(-8) ≈ 3.4e-4` 按住，改动被 fp32 的 7 位有效数字吞掉；
+2. **分支真的断了** —— 某处 detach / 被覆盖，`X_final` 实际等于 `X_t`；
+3. **度量精度** —— `1-cos` 在 1e-6 量级下四舍五入到同一位。
+
+**判定探针**（不改任何文件）：扫 `residual_gate ∈ {−8,−5,−2,0,3}`，记录
+`||X_final−X_t||max`、`||X_rec−X_t||max`、三个 `d_*`：
+
+* 随 gate 单调放大 → 可能性 1 → 修法在**初始化或目标函数**；
+* 完全不随 gate 变 → 可能性 2 → 修法在**接线**（用"配置字段 vs 实际读取"扫描器揪）；
+* 只在 1e-6 量级变 → 可能性 3 → 修法在**度量口径**。
+
+### 17.3 已知的"声明了但代码从不读取"字段
+
+| 字段 | 位置 | 影响 |
+|---|---|---|
+| `scheduled_sampling_prob` | `codetrack/config.py` | S4 的 exposure bias 处理是空的 |
+| `memory_tbptt_steps` | `codetrack/config.py` | 跨帧信用分配是空的（当前无条件 `mem.detach()`） |
+
+这两个字段**在整仓库里只出现在 `config.py`**（全仓库 grep 命中数 = 2）。
+
+### 17.4 框架缺口
+
+`--resume` 被 argparse 接受、存进 `runtime_vars.resume`、传给 `DefaultApplication` 的
+`application_state_file`，但**从不被读取**（全仓库 grep 只有那一处传参）。
+所以框架层面的 resume 实际不生效；编排器的 resume 走的是"上一阶段的 checkpoint 作为
+`--weight_path`"加"阶段边界与 epoch 边界对齐"，不依赖这条通路。
