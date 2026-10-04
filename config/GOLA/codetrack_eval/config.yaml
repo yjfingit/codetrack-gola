@@ -1,0 +1,209 @@
+name: CodeTrack/B-224 eval
+logging:
+  category: CodeTrack
+  tags:
+  - DINOv2
+  - base
+  - '224'
+  - GOLA
+  - CodeTrack
+  - eval
+type: GOLA
+common:
+  template_size:
+  - 112
+  - 112
+  search_region_size:
+  - 224
+  - 224
+  template_feat_size:
+  - 8
+  - 8
+  search_region_feat_size: &id001
+  - 16
+  - 16
+  response_map_size: *id001
+  template_feat_data_layout: NLC
+  interpolation_mode: bilinear
+  interpolation_align_corners: false
+  normalization: mm
+model:
+  type: dinov2
+  backbone:
+    type: DINOv2
+    parameters:
+      name: ViT-B/14
+      acc: default
+  lora:
+    r: 64
+    alpha: 64
+    dropout: 0.0
+    use_rslora: false
+  num_vpt_tokens: 10
+  adapter_reduction_factor: 16
+  codetrack:
+    enabled: true
+    z_len: 64
+    x_len: 256
+    dim: 768
+    grid: 16
+    mid_dim: 128
+    num_checks: 64
+    h_links_per_check: 12
+    h_min_col_degree: 3
+    h_locality_window: 5
+    h_seed: 1234
+    syndrome_hidden: 128
+    syndrome_cos: true
+    detection_prior: 0.2
+    motion_enabled: true
+    motion_process_noise: 0.01
+    motion_measurement_noise: 0.04
+    memory_enabled: true
+    memory_frames: 3
+    memory_tokens: 8
+    memory_dim: 128
+    topk_tokens: 32
+    num_neighbours: 8
+    refiner_hidden: 256
+    refiner_heads: 4
+    diffusion_enabled: true
+    diffusion_steps: 2
+    diffusion_hidden: 256
+    diffusion_heads: 4
+    noise_weak_std: 0.05
+    noise_strong_std: 0.2
+    noise_strong_prob: 0.5
+    template_protection: true
+    template_threshold: 0.5
+    gola_update_threshold: 0.84
+    w_track_corr: 1.0
+    w_track_clean: 0.25
+    lambda_diag: 0.5
+    lambda_rec: 0.2
+    lambda_align: 0.2
+    lambda_pres: 0.01
+    lambda_mem: 0.1
+    lambda_gate: 0.1
+    lambda_motion: 0.2
+    diagnosis_alpha: 0.5
+    corruption_enabled: true
+    corruption_image_prob: 0.45
+    corruption_token_ratio: 0.4
+    corruption_severity: 0.4
+run:
+  type: default
+  num_epochs: 1
+  efficiency_assessment:
+    enabled: true
+    latency:
+      auto_mixed_precision:
+        enabled: true
+  checkpoint:
+  - type: regular
+    epoch_trigger:
+      interval: 1
+      last: true
+    resumable: false
+    max_to_keep: 5
+  task:
+    eval:
+      is_train: false
+      data: eval
+      runner: test
+      epoch_trigger:
+        last: true
+      logging:
+        interval: 100
+        local:
+          header: Eval
+      batch_collective_communication:
+        type: time
+        interval: 10
+  data:
+    eval:
+      batch_size: 128
+      num_io_threads: 0
+      num_workers: 4
+      type: siamese_tracker_eval
+      source:
+        type: dataset
+        parameters:
+          filters:
+          - type: data_cleaning.annotation_standard
+            parameters:
+              bounding_box_format: XYXY
+              bounding_box_coordinate_system: Continuous
+          datasets:
+          - name: LasHeR
+            type: MMOT
+            splits:
+            - test
+      sampler:
+        type: distributed_dynamic_scheduling
+        shuffle: true
+        repeat_times:
+        - match:
+            type: dataset
+            name_regex: LaSOT_Extension
+          value: 3
+        - match:
+            type: dataset
+            name_regex: .*
+          value: 1
+      transform:
+        type: default
+        template_area_factor: 2.0
+      result_collector:
+        async_worker: true
+        log_summary: true
+        dispatch:
+        - match:
+            name: GOT-10k
+            split: test
+          handlers:
+          - type: external/GOT10k
+            file_name: GOT10k-test
+            bbox_rasterize: true
+        - match:
+            name: TrackingNet
+            split: test
+          handlers:
+          - type: external/TrackingNet
+            file_name: TrackingNet-test
+            bbox_rasterize: true
+        - match:
+            name_regex: .*
+          handlers:
+          - type: one_pass_evaluation_compatible
+          - type: external/PyTracking
+            file_name: results
+  runner:
+    test:
+      type: default_eval
+      inference_engine:
+        type: plain
+        auto_mixed_precision:
+          enabled: true
+        torch_compile:
+          enabled: false
+      evaluator:
+        type: default
+        pipeline:
+          type: one_stream_tracker
+          search_region_cropping:
+            type: simple
+            min_object_size: 10
+            area_factor: 4.0
+          post_process:
+            type: box_with_score_map
+            window_penalty: 0.45
+          template_update:
+            type: simple
+            update_threshold: 0.84
+            template_area_factor: 2.0
+          visualization: false
+          plugin:
+          - type: template_foreground_indicating_mask_generation
+          - type: online_template_foreground_indicating_mask_generation
+            template_area_factor: 2.0

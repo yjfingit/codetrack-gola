@@ -1,0 +1,168 @@
+# CodeTrack smoke-training config: GOLA-B + CodeTrack on ONE LasHeR sequence.
+#
+# Self-contained `run:` block (the upstream run.yaml is not included) because the mixin
+# machinery can only *replace existing keys* -- `json_query_replace` skips a key that is not
+# already present -- so the `codetrack` criterion cannot be introduced by a mixin.
+# The single sequence comes from consts.LasHeR_PATH pointing at
+# data/LasHeR_train_single (a one-line trainingsetList.txt); see
+# scripts/codetrack_train_smoke.sh.
+name: "CodeTrack/B-224 smoke"
+
+logging:
+  category: "CodeTrack"
+  tags: ["DINOv2", "base", "224", "GOLA", "CodeTrack", "smoke"]
+
+type: "GOLA"
+
+common:
+  template_size: [ 112, 112 ]
+  search_region_size: [ 224, 224 ]
+  template_feat_size: [ 8, 8 ]
+  search_region_feat_size: &search_region_feat_size [ 16, 16 ]
+  response_map_size: *search_region_feat_size
+  template_feat_data_layout: "NLC"
+  interpolation_mode: "bilinear"
+  interpolation_align_corners: false
+  normalization: "mm"
+
+model:
+  type: "dinov2"
+  backbone:
+    type: "DINOv2"
+    parameters:
+      name: "ViT-B/14"
+      acc: "default"
+  lora:
+    r: 64
+    alpha: 64
+    dropout: 0.
+    use_rslora: false
+  num_vpt_tokens: 10
+  adapter_reduction_factor: 16
+  codetrack: !include "../dinov2/codetrack_b.yaml"
+
+run:
+  type: "default"
+
+  num_epochs: 1
+
+  efficiency_assessment:
+    enabled: false
+
+  checkpoint:
+    - type: "regular"
+      epoch_trigger:
+        interval: 1
+        last: true
+      resumable: false
+      max_to_keep: 2
+
+  task:
+    train:
+      is_train: true
+      data: "train"
+      runner: "train"
+      logging:
+        interval: 1
+        local:
+          header: "Epoch: [{epoch}]"
+
+  data:
+    train:
+      global_batch_size: 2
+      num_io_threads: 0
+      num_workers: 2
+      type: "siamese_tracker_train"
+      source:
+        type: "dataset"
+        parameters: !include "../../_dataset/train-lasher.yaml"
+      sampler:
+        type: "random"
+        samples_per_epoch: 6
+        seed: 42
+        weight:
+          - match:
+              type: "dataset"
+              name: "LasHeR"
+            value: 1.0
+      siamese_training_pair_sampling:
+        positive_sample:
+          sample_mode: "interval"
+          max_gaps: 100
+      transform:
+        type: "default"
+        SiamFC_cropping:
+          template:
+            area_factor: 2.
+          search_region:
+            area_factor: 4.
+            scale_jitter: 0.25
+            translation_jitter: 3
+            min_object_size: 10
+        online_bbox_shift:
+          shift_range_x: [0.5, 1]
+          shift_range_y: [0.5, 1]
+        augmentation:
+          - type: "horizontal_flip"
+            target: ["template", "search_region", "online"]
+            probability: 0.5
+            joint: false
+          - type: "color_jitter_mm"
+            target: ["template", "search_region", "online"]
+            brightness: 0.4
+            contrast: 0.4
+            saturation: 0.4
+            joint: false
+          - type: "DeiT_3_aug_mm"
+            target: ["template", "search_region", "online"]
+            joint: true
+        plugin:
+          - type: "box_with_score_map_label_generation"
+          - type: "template_foreground_indicating_mask_generation"
+          # architecture figure block 1: attack the input, not only the tokens
+          - type: "image_corruption"
+        visualize: false
+
+  runner:
+    train:
+      type: "default_train"
+      optimization:
+        optimizer:
+          type: "AdamW"
+          lr: 1.e-4
+          weight_decay: 0.1
+          fused: false
+          per_parameter:
+            - type: "zero_1d_param_weight_decay"
+            - name_regex: "embed"
+              weight_decay: 0.
+        grad_accumulation_steps: 1
+        max_grad_norm: 1.0
+        zero_grad_set_to_none: true
+        lr_scheduler:
+          type: "timm"
+          sched: "cosine"
+          per_iteration: true
+          parameters:
+            lr_min: 1.e-6
+            warmup_prefix: true
+            warmup_epochs: 2
+            warmup_lr: 1.e-7
+        auto_mixed_precision:
+          enabled: true
+          dtype: float16
+      torch_compile:
+        enabled: false
+      detect_unused_parameters: false
+      criteria:
+        type: "codetrack"
+        w_track_corr: 1.0
+        w_track_clean: 0.25
+        lambda_diag: 0.5
+        lambda_rec: 0.2
+        lambda_align: 0.2
+        lambda_pres: 0.01
+        lambda_mem: 0.1
+        lambda_gate: 0.1
+        lambda_motion: 0.2
+        diagnosis_alpha: 0.5

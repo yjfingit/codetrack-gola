@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Large binaries / generated artefacts -- NOT part of the source.
+# ---------------------------------------------------------------------------
+
+# GOLA checkpoints: gola_l224.bin is 130 MB, above GitHub's 100 MB hard limit.
+# The models are downloaded (scripts/00_env.sh) or fetched from the upstream release.
+weights/*.bin
+weights/*.pth
+
+# Paper PDFs (165 MB).  docs/paper/README.md and docs/paper/math/README.md are kept:
+# they are the index that says which paper each file was and where it came from.
+docs/paper/**/*.pdf
+
+# Run outputs (trained checkpoints, eval answers, logs).
+outputs/
+
+# ---------------------------------------------------------------------------
+# Reference source checkouts.
+#   repo/*           : third-party projects cloned for reference (each has its own .git)
+#   third_party/GOLA : pristine read-only clone of the upstream GOLA repo
+# Re-clone them with scripts/reorg.sh / the URLs recorded in repo/README.md.
+# ---------------------------------------------------------------------------
+repo/*/
+third_party/
+
+# ---------------------------------------------------------------------------
+# Python / tooling
+# ---------------------------------------------------------------------------
+# Framework-generated dataset caches that happen to live inside the tree
+trackit/datasets/cache/
+
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Runtime scratch created by the scripts
+# ---------------------------------------------------------------------------
+consts.yaml.eval_backup
+data/LasHeR_single/
+data/LasHeR_train_single/
+*.log

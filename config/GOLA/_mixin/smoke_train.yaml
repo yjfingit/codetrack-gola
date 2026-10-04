@@ -1,0 +1,8 @@
+# CodeTrack local smoke override: tiny batch + tiny epoch so the train loop can be
+# verified end-to-end in a few optimizer steps. Not an experiment config.
+- path: "run.data.train.global_batch_size"
+  value: 4
+- path: "run.data.train.sampler.samples_per_epoch"
+  value: 8
+- path: "run.num_epochs"
+  value: 1
