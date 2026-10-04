@@ -516,7 +516,7 @@ scheduler 用 update 计数且 `t_initial=10240`。
 
 | 验证 | 结果 |
 |---|---|
-| `tools/preflight_acceptance.py` | **55/55** |
+| `tools/preflight_acceptance.py` | **104/104** (current; this row was 55/55 at the time of round 3) |
 | `tools/causality_check.py` | **6/6** |
 | `tools/codetrack_verify.py` | 恒等性 `1.15e-4`、checkpoint 1311/1311、10/10 梯度 |
 | `tools/lora_grad_check.py` | LoRA 1296/1296，主干 0 漂移 |

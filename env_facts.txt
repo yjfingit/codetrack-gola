@@ -1,0 +1,5 @@
+Python 3.10.8 (main, Nov 24 2022, 14:13:03) [GCC 11.2.0]
+
+NVIDIA GeForce RTX 4090 D, 570.124.04
+
+torch 2.5.1+cu124 cuda 12.4 cudnn 90100

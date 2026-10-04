@@ -1,0 +1,96 @@
+{
+  "mode": "interfaces",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "steps": 200,
+  "source_package": "None",
+  "d_input": 0.07398319244384766,
+  "source_file": "/home/yangjuanfeng/lab/projects/gola-CodeTrack/codetrack/__init__.py",
+  "slices": {
+    "Z_RGB": [
+      0,
+      64
+    ],
+    "X_RGB": [
+      64,
+      320
+    ],
+    "Z_TIR": [
+      320,
+      384
+    ],
+    "X_TIR": [
+      384,
+      640
+    ],
+    "Z_on": [
+      640,
+      704
+    ],
+    "D_TIR": [
+      704,
+      768
+    ]
+  },
+  "matches_native_head": true,
+  "recovery_gradients": {
+    "H": 4.4233536755200475e-05,
+    "diagnosis": 0.6332321166992188,
+    "template_pool": 0.2362602949142456,
+    "motion": 3.6444464058149606e-05,
+    "memory": 0.0028517290484160185,
+    "refiner": 0.4198969602584839,
+    "condition_proj": 0.6039118766784668,
+    "denoiser": 6.1023030281066895,
+    "meanvar": 0.2533593773841858,
+    "template_gate": 0.0
+  },
+  "ablations": {
+    "aux_to_refiner": 0.001954796025529504,
+    "q_to_refiner": 0.006967182271182537,
+    "motion_to_refiner": 0.0005869788583368063,
+    "memory_to_refiner": 1.7723252312862314e-05,
+    "template_to_refiner": 0.000340543978381902,
+    "s_to_denoiser": 0.000795439351350069,
+    "motion_to_denoiser": 0.0005138277192600071,
+    "memory_to_denoiser": 1.8402268324280158e-05
+  },
+  "motion_bias_normalisation_effect": 0.003732341807335615,
+  "gate_topk_gap": 0.008835024200379848,
+  "template_quality": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "template_gate": [
+    0.3026878535747528,
+    0.3026990592479706,
+    0.30269530415534973,
+    0.30269473791122437,
+    0.30269408226013184,
+    0.3027011752128601,
+    0.30269569158554077,
+    0.30270349979400635,
+    0.3026919662952423,
+    0.3026990294456482
+  ],
+  "reset_clears_box": true,
+  "reset_clears_admission": true
+}

@@ -1,0 +1,94 @@
+{
+  "mode": "interfaces",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "steps": 200,
+  "source_package": "None",
+  "d_input": 0.07398319244384766,
+  "slices": {
+    "Z_RGB": [
+      0,
+      64
+    ],
+    "X_RGB": [
+      64,
+      320
+    ],
+    "Z_TIR": [
+      320,
+      384
+    ],
+    "X_TIR": [
+      384,
+      640
+    ],
+    "Z_on": [
+      640,
+      704
+    ],
+    "D_TIR": [
+      704,
+      768
+    ]
+  },
+  "matches_native_head": true,
+  "recovery_gradients": {
+    "H": 3.083916089963168e-05,
+    "diagnosis": 0.4472096860408783,
+    "template_pool": 0.1827361285686493,
+    "motion": 1.6120291547849774e-05,
+    "memory": 0.001498492667451501,
+    "refiner": 0.3302507698535919,
+    "condition_proj": 0.5684627890586853,
+    "denoiser": 5.268849849700928,
+    "meanvar": 0.0,
+    "template_gate": 0.0
+  },
+  "ablations": {
+    "aux_to_refiner": 0.0014439498772844672,
+    "q_to_refiner": 0.006456283852458,
+    "motion_to_refiner": 0.0007778381695970893,
+    "memory_to_refiner": 9.726660437081591e-07,
+    "template_to_refiner": 0.0003069996600970626,
+    "s_to_denoiser": 0.0008106065797619522,
+    "motion_to_denoiser": 0.00048284322838298976,
+    "memory_to_denoiser": 1.2373630852380302e-05
+  },
+  "gate_topk_gap": 0.00884796679019928,
+  "template_quality": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "template_gate": [
+    0.29190024733543396,
+    0.2919175326824188,
+    0.2919173836708069,
+    0.2919173240661621,
+    0.2919013798236847,
+    0.29187262058258057,
+    0.29189905524253845,
+    0.29187536239624023,
+    0.2919061779975891,
+    0.2918946444988251
+  ],
+  "reset_clears_box": true,
+  "reset_clears_admission": true
+}

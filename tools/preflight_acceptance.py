@@ -90,7 +90,16 @@ def build_from_branch(branch_cfg: dict):
     # ``enabled`` must be passed through: it is a bool field and the dataclass default is False,
     # so stripping it silently constructs no CodeTrack branch at all (the previous revision of
     # this helper did exactly that and every scope query returned "no parameters").
-    return build(dict(branch_cfg))
+    branch = dict(branch_cfg)
+    m = build(branch)
+    # Mirror GOLA/builder.py:75.  ``GOLA_DINOv2.__init__`` freezes the whole trunk, so a stage
+    # that declares ``backbone_scope`` (S3: the last two DINOv2 blocks) is only distinguishable
+    # from S2 once the same unlock runs here.
+    scope = branch.get("backbone_scope") or []
+    if scope:
+        from trackit.models.methods.GOLA.builder import _unfreeze_backbone_scope
+        _unfreeze_backbone_scope(m, branch)
+    return m
 
 def batch(b=2, seed=4):
     g = torch.Generator(device="cuda").manual_seed(seed)
@@ -368,14 +377,23 @@ def main() -> int:
               d_input > 1e-3,
               f"d_input={d_input:.6f} d_before={d_before:.6f} d_after={d_after:.6f} "
               f"gain_total={d_input - d_after:+.2e} ({int(cmask.sum())} tokens)")
-        check("d_input is strictly larger than the post-recovery distance",
-              d_input > d_before - 1e-6,
-              f"d_input={d_input:.6f} vs d_before={d_before:.6f} (recovery can only reduce it)")
-        # At initialisation the residual gate is sigmoid(-8) ~ 3.4e-4, so the recovery is a
-        # near-identity BY DESIGN and a non-positive gain here is expected, not a failure.  What
-        # would be a failure is the branch being unable to move a damaged token more than a
-        # healthy one, which is the standalone check below.
-        check("recovery is a near-identity at initialisation (gate design)",
+        # Random residual weights need not improve recovery before training.  Check the
+        # token layout independently of the shared student/teacher slicing code instead.
+        sentinel = torch.arange(768, device=xin.device).view(1, 768, 1)
+        slices = m.codetrack._split(sentinel)
+        expected = {"Z_RGB": (0, 64), "X_RGB": (64, 320), "Z_TIR": (320, 384),
+                    "X_TIR": (384, 640), "Z_on": (640, 704), "D_TIR": (704, 768)}
+        layout_ok = all(torch.equal(slices[key], sentinel[:, start:end])
+                        for key, (start, end) in expected.items())
+        check("all six token slices are disjoint and X_TIR matches the native GOLA head",
+              layout_ok and torch.equal(slices['X_TIR'], m._fuse_search(sentinel, 64, 256)),
+              f"X_TIR=384:640; d_input={d_input:.6f} d_before={d_before:.6f}")
+        # At initialisation the residual predictors use small non-zero output weights
+        # (up_init_std=0.02) behind a moderate sigmoid(0)=0.5 gate.  The product is still a
+        # near-identity BY DESIGN, but unlike the old sigmoid(-8) gate it does not starve every
+        # upstream conditioning path of gradient.  A non-positive random-init gain is therefore
+        # expected here; learn_probe.py checks whether optimisation can subsequently improve it.
+        check("recovery is a near-identity at initialisation (small-up design)",
               abs(d_after - d_before) < 1e-2 * max(d_before, 1e-6),
               f"|gain| / d_before = {abs(d_after - d_before) / max(d_before, 1e-9):.3e}")
     else:
@@ -541,6 +559,13 @@ def main() -> int:
 
     def scope_union(cfg):
         """(set of optimised names, {name: lr}) for a stage config, on a matching probe model."""
+        # The runner unlocks the trunk through ``codetrack.backbone_scope`` before the
+        # optimiser ever sees the parameters (GOLA/builder.py:75).  This probe must do the
+        # same, or a stage that is supposed to fine-tune the last DINOv2 blocks looks like it
+        # trains nothing -- which is what made this check report a defect that was real in the
+        # runner but invisible here, for the opposite reason.  ``build`` stores the branch
+        # config on the module, so the unlock is applied inside ``build_from_branch`` via the
+        # explicit flag below.
         probe = build_from_branch(cfg["model"]["codetrack"])
         probe.cuda().train()
         probe_name_of = {id(p): n for n, p in probe.named_parameters()}
@@ -548,9 +573,15 @@ def main() -> int:
         o = cfg["run"]["runner"]["train"]["optimization"]["optimizer"]
         sink = _io.StringIO()
         with contextlib.redirect_stdout(sink):
+            # ``backbone_scope`` MUST be carried across: it is how the live optimiser learns
+            # that the trunk blocks are in scope (apply.py:53).  Omitting it here made the
+            # probe test a stricter fixture than the runner and produced a false FAIL -- the
+            # same class of error as the earlier "measured the replica instead of the real
+            # config" incident.
             gs = parse_optimizer_per_params_config(probe, probe_crit, {
                 "lr": o["lr"], "weight_decay": o["weight_decay"],
                 "parameter_scope": o.get("parameter_scope"),
+                "backbone_scope": o.get("backbone_scope"),
                 "per_parameter": o["per_parameter"]})
         lrs = {}
         for g in gs:
@@ -600,12 +631,15 @@ def main() -> int:
         dino_names = sorted(n for n in lrs if n.startswith(("blocks.10.", "blocks.11."))
                             and "lora" not in n)
         if dino_names:
-            got = lrs[dino_names[0]]
+            wrong_lrs = {n: lrs[n] for n in dino_names if lrs[n] != 1.5e-6}
             check("S3 routes DINOv2 last-2 to the foundation lr (1.5e-6)",
-                  got == 1.5e-6, f"{dino_names[0]} -> lr={got}")
-        # block 0 must not be in the optimizer at all
+                  not wrong_lrs,
+                  f"{len(dino_names)} base tensors; wrong LR: {wrong_lrs}")
+        # The first ten base blocks stay frozen; their LoRA adapters remain trainable.
+        early_base = sorted(n for n in lrs
+                            if re.match(r"^blocks\.[0-9]\.", n) and "lora" not in n)
         check("S3 leaves the first ten DINOv2 blocks out of the optimizer",
-              not any(n.startswith("blocks.0.") for n in lrs))
+              not early_base, f"{len(early_base)} base tensors: {early_base[:3]}")
     if "S4" in scopes:
         _, lrs = scopes["S4"]
         motion_names = [n for n in lrs if ".motion." in n and n.endswith(".weight")]

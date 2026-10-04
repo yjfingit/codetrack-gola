@@ -56,6 +56,8 @@ model:
     syndrome_hidden: 128
     syndrome_cos: true
     detection_prior: 0.2
+    syndrome_logit_gain: 1.0
+    syndrome_gain_calibration: true
     motion_enabled: true
     motion_process_noise: 0.01
     motion_measurement_noise: 0.04
@@ -67,6 +69,10 @@ model:
     num_neighbours: 8
     refiner_hidden: 256
     refiner_heads: 4
+    residual_gate_init: 0.0
+    up_init_std: 0.02
+    motion_bias_normalise: true
+    motion_bias_scale: 0.5
     diffusion_enabled: true
     diffusion_steps: 2
     diffusion_hidden: 256
@@ -87,15 +93,19 @@ model:
     lambda_gate: 0.1
     lambda_motion: 0.2
     diagnosis_alpha: 0.5
-    corruption_enabled: true
-    corruption_image_prob: 0.45
+    corruption_enabled: false
+    corruption_image_prob: 0.06
+    corruption_token_prob: 0.06
     corruption_token_ratio: 0.4
     corruption_severity: 0.4
 run:
   type: default
   num_epochs: 1
   efficiency_assessment:
-    enabled: true
+    # Profiling performs a separate latency benchmark and FLOP trace before frame 1.  It took
+    # more than six minutes on ViT-B/14 and made the smoke launcher appear hung; profiling has
+    # its own entry point (profile_model.py), so ordinary closed-loop evaluation keeps it off.
+    enabled: false
     latency:
       auto_mixed_precision:
         enabled: true

@@ -28,7 +28,8 @@ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
 
 from codetrack.config import CodeTrackConfig  # noqa: E402
 
-DEFAULT_WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
 DEFAULT_CONFIG: Dict = dict(
     enabled=True, z_len=64, x_len=256, dim=768, grid=16,
     mid_dim=128, num_checks=64, h_links_per_check=12, h_min_col_degree=3,

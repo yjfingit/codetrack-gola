@@ -31,8 +31,17 @@ _CustomLoader.add_constructor('!include', _CustomLoader.include)
 
 def _initialize_global_constants():
     global _global_constants
-    constants_config_file_path = os.path.join(__root_path, 'consts.yaml')
-    if not os.path.exists(constants_config_file_path):
+    # Smoke/evaluation launchers need a run-local dataset view.  Mutating the repository-wide
+    # consts.yaml made concurrent jobs race and left the project misconfigured after SIGKILL.
+    # An explicit override keeps each process isolated; the default path is unchanged.
+    constants_override = os.environ.get('TRACKIT_CONSTS_PATH')
+    constants_config_file_path = (os.path.abspath(constants_override)
+                                  if constants_override
+                                  else os.path.join(__root_path, 'consts.yaml'))
+    if constants_override and not os.path.isfile(constants_config_file_path):
+        raise FileNotFoundError(
+            f'TRACKIT_CONSTS_PATH does not point to a file: {constants_config_file_path}')
+    if not constants_override and not os.path.exists(constants_config_file_path):
         shutil.copy(os.path.join(__root_path, 'consts.yaml.template'), constants_config_file_path)
         print('consts.yaml not found, copied from template', flush=True)
 

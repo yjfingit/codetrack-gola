@@ -420,7 +420,8 @@ class TemporalMemory(nn.Module):
             nn.Linear(frames * memory_dim, 2 * memory_dim), nn.GELU(),
             nn.Linear(2 * memory_dim, self.tokens * memory_dim),
         )
-        nn.init.zeros_(self.tgs_modulator[-1].weight)
+        # A zero output layer blocks recovery gradients into summaries/TRC on step zero.
+        nn.init.normal_(self.tgs_modulator[-1].weight, std=0.02)
         nn.init.zeros_(self.tgs_modulator[-1].bias)
 
     # ------------------------------------------------------------------ helpers
@@ -464,7 +465,8 @@ class TemporalMemory(nn.Module):
             w = reliability / reliability.sum(dim=-1, keepdim=True).clamp(min=1e-6)
             cur_summary = (pooled * w.unsqueeze(-1)).sum(dim=1)
         cur_summary = cur_summary.unsqueeze(1)                          # (B, 1, D)
-        cur_rel = torch.sigmoid(reliability.mean(dim=-1, keepdim=True)).unsqueeze(-1)  # (B,1,1)
+        # Reliability already lies in [0, 1]; another sigmoid restricts it to [0.5, 0.731].
+        cur_rel = reliability.mean(dim=-1, keepdim=True).unsqueeze(-1)  # (B,1,1)
 
         # ---- roll the bank: newest frame in front, older ones decay ----------------
         admitted = None
@@ -516,7 +518,9 @@ class TemporalMemory(nn.Module):
         gate_in = torch.cat([mem.reshape(b, -1), u], dim=-1)
         c = torch.sigmoid(self.trc_gate(gate_in))                       # (B, F)
         # anchor: the oldest stored frame is the ground-truth-derived template
-        c_anchored = torch.cat([torch.ones_like(c[:, :1]), c[:, 1:]], dim=1)
+        # Slot 0 is the NEWEST rolling search summary, not an immutable clean template.
+        # Pinning it to 1 blindly trusts the very frame that may be damaged.
+        c_anchored = c
         # suppression: s_hat_i = s_i * c_i   (DTPTrack eq. 2, last line)
         calibrated = mem * c_anchored.unsqueeze(-1)
 

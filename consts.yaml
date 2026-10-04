@@ -7,8 +7,8 @@ on_shared_file_system: false
 
 # Dataset Paths
 
-LasHeR_PATH: '/root/autodl-tmp/lab/projects/gola-CodeTrack/data/LasHeR_single/'
-RGBT234_PATH: '/root/autodl-tmp/lab/dataset/RGBT234/'
+LasHeR_PATH: '/home/yangjuanfeng/lab/dataset/LasHeR/'
+RGBT234_PATH: '/home/yangjuanfeng/lab/dataset/RGBT234/'
 RGBT210_PATH: ''
 GTOT_PATH: ''
 

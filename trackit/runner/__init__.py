@@ -19,6 +19,14 @@ class Runner:
     def epoch_end(self, epoch: int, model_manager: ModelManager) -> None:
         raise NotImplementedError()
 
+    def should_stop(self) -> bool:
+        """Whether this runner requests an early end to the current epoch.
+
+        Evaluation and legacy runners have no update budget, so their safe default is False.
+        The staged training runner overrides this when ``max_updates`` is reached.
+        """
+        return False
+
     def get_state(self) -> Any:
         raise NotImplementedError()
 

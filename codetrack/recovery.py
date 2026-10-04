@@ -41,7 +41,8 @@ class H_RoutedSparseRefiner(nn.Module):
     def __init__(self, dim: int = 768, hidden: int = 256, heads: int = 4,
                  num_neighbours: int = 8, template_dim: Optional[int] = None,
                  memory_dim: int = 128, dropout: float = 0.0,
-                 residual_gate_init: float = -8.0, motion_bias_scale: float = 0.5):
+                 residual_gate_init: float = 0.0, motion_bias_scale: float = 0.5,
+                 up_init_std: float = 0.02, motion_bias_normalise: bool = True):
         super().__init__()
         self.dim = dim
         self.hidden = hidden
@@ -49,6 +50,7 @@ class H_RoutedSparseRefiner(nn.Module):
         self.num_neighbours = num_neighbours
         self.memory_dim = memory_dim
         self.motion_bias_scale = float(motion_bias_scale)
+        self.motion_bias_normalise = bool(motion_bias_normalise)
 
         # condition = [ K_n neighbours (flattened) | X_aux_i | template | memory | q_i ]
         neighbour_dim = dim * num_neighbours
@@ -63,23 +65,31 @@ class H_RoutedSparseRefiner(nn.Module):
         self.out_proj = nn.Linear(hidden, hidden)
         self.norm = nn.LayerNorm(hidden)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        # 256 -> 768 residual predictor.  Deliberately *not* zero-initialised: if ``up``
-        # starts at zero then ``pred = 0``, and since the residual enters as ``w * pred``
-        # the gradient to every upstream branch (motion prior, memory, condition projection,
-        # attention) is multiplied by ``up.weight = 0`` and vanishes.  Identity at step 0 is
-        # instead enforced by ``residual_gate`` below.  Its bias starts at ``-8``
-        # (sigmoid ~ 3.4e-4): the residual is small enough that stage-0 output matches the GOLA
-        # baseline, while d(residual)/d(up) stays large enough to train the upstream branches.
-        # Measured on this model, the gradient reaching the temporal memory is ~50x larger at
-        # -8 than at -12 (1.7e-5 vs 3.1e-7), where the branch is connected but effectively
-        # untrainable.  The gate can only grow from here.
+        # 512 -> 768 residual predictor.
+        #
+        # REVISED 2026-10-04.  The previous design put the entire "be the identity at step 0"
+        # burden on a large negative scalar gate (sigmoid(-8) = 3.35e-4) while leaving ``up``
+        # at the default init.  Two measured consequences:
+        #   * ``||X_final - X_t|| / ||X_t|| = 1.675e-05`` -- the branch is invisible at the
+        #     resolution of the angular recovery metric, so every downstream comparison reads
+        #     "no change" whether or not the branch works;
+        #   * optimising ``codetrack.*`` directly on a recovery-only loss converges to
+        #     ``d_after = 0.0111`` from gate -8.0 but ``0.00565`` from gate 0.0 -- the gate
+        #     halves the achievable recovery, it does not merely hide it.
+        # The two roles are now separated: ``up`` is initialised small-but-nonzero
+        # (``up_init_std``) so gradient flows, and the gate starts at a moderate value so the
+        # product is still near identity.  See ``residual_scale`` below.
         self.up = nn.Linear(hidden, dim)
+        nn.init.normal_(self.up.weight, mean=0.0, std=float(up_init_std))
+        nn.init.zeros_(self.up.bias)
         self.residual_gate = nn.Parameter(torch.full((1,), float(residual_gate_init)))
 
         # NOTE: no ``template_proj`` here.  An earlier version built
         # ``nn.Linear(dim, dim) if template_dim is None else nn.Identity()`` and never called
         # it, which left two parameters in the optimizer that could never receive a gradient.
         self.memory_proj = nn.Linear(memory_dim, memory_dim)
+        self.memory_k_proj = nn.Linear(memory_dim, hidden)
+        self.memory_v_proj = nn.Linear(memory_dim, hidden)
 
     def forward(self, X_t: torch.Tensor, X_aux: torch.Tensor, q: torch.Tensor,
                 neighbour_index: torch.Tensor, template_pool: torch.Tensor,
@@ -104,11 +114,24 @@ class H_RoutedSparseRefiner(nn.Module):
         # ---- 2. motion prior enters as an attention bias ------------------------
         attn_bias = None
         if motion_map is not None:
-            grid = int(round(math.sqrt(n)))
             flat_map = motion_map.reshape(motion_map.shape[0], -1)    # (B, N)
-            # log-space bias, scaled small so it nudges rather than dominates
             nb_bias = flat_map[bidx[:, :, None], nb]                  # (B, K, K_n)
-            attn_bias = torch.log(nb_bias.clamp(min=1e-4)) * float(self.motion_bias_scale)
+            log_b = torch.log(nb_bias.clamp(min=1e-4))
+            # REVISED 2026-10-04.  ``motion_map`` is normalised to unit mass, so its entries
+            # cluster at 1/256 = 3.9e-3 with a spread of only 2e-3.  ``log`` of that is a
+            # constant -1.55 plus +-0.5, and scaling it down gave a logit spread of ~0.05 nats
+            # over the 8 neighbours -- a softmax that is numerically uniform, which is why
+            # zeroing ``motion_map`` changed ``X_rec`` by only 7.4e-07 relative.
+            # Centring and standardising the log-bias makes ``motion_bias_scale`` a real
+            # "nats of spread" knob independent of the map's arbitrary offset, while preserving
+            # the prior's SHAPE (which cells are favoured).  Set
+            # ``motion_bias_normalise=False`` to reproduce the pre-2026-10-04 numerics exactly.
+            if self.motion_bias_normalise:
+                dims = tuple(range(1, log_b.dim()))
+                mu = log_b.mean(dim=dims, keepdim=True)
+                sd = log_b.std(dim=dims, keepdim=True, unbiased=False).clamp(min=1e-6)
+                log_b = (log_b - mu) / sd
+            attn_bias = log_b * float(self.motion_bias_scale)
 
         # ---- 3. condition ------------------------------------------------
         tpl = template_pool.unsqueeze(1).expand(-1, k, -1)            # (B, K, C)
@@ -135,6 +158,15 @@ class H_RoutedSparseRefiner(nn.Module):
         kv = nb_tokens.reshape(b, k * k_n, c)
         kh = self.k_proj(kv).view(b, k, k_n, heads, dh).permute(0, 3, 1, 2, 4)  # (B,H,K,Kn,dh)
         vh = self.v_proj(kv).view(b, k, k_n, heads, dh).permute(0, 3, 1, 2, 4)
+        if memory_readout is not None:
+            # Preserve the dedicated prior-token set instead of exposing only its mean.
+            count = memory_readout.shape[1]
+            mk = self.memory_k_proj(memory_readout).view(b, count, heads, dh).permute(0, 2, 1, 3)
+            mv = self.memory_v_proj(memory_readout).view(b, count, heads, dh).permute(0, 2, 1, 3)
+            kh = torch.cat([kh, mk.unsqueeze(2).expand(-1, -1, k, -1, -1)], dim=3)
+            vh = torch.cat([vh, mv.unsqueeze(2).expand(-1, -1, k, -1, -1)], dim=3)
+            if attn_bias is not None:
+                attn_bias = F.pad(attn_bias, (0, count))
         logits = torch.einsum("bhkd,bhksd->bhks", qh, kh) / math.sqrt(dh)
         if attn_bias is not None:
             logits = logits + attn_bias.unsqueeze(1)                   # (B,1,K,Kn)
@@ -202,8 +234,8 @@ class NoiseModulatedDenoiser(nn.Module):
     def __init__(self, dim: int = 768, hidden: int = 256, heads: int = 4,
                  steps: int = 2, num_checks: int = 64, cond_dim: int = 256,
                  noise_schedule_power: float = 1.0, motion_dim: int = 2,
-                 memory_dim: int = 128, residual_gate_init: float = -8.0,
-                 write_schedule: str = "ramp"):
+                  memory_dim: int = 128, residual_gate_init: float = 0.0,
+                 write_schedule: str = "ramp", up_init_std: float = 0.02):
         super().__init__()
         self.dim = dim
         self.hidden = hidden
@@ -232,15 +264,23 @@ class NoiseModulatedDenoiser(nn.Module):
         #                         | motion prior + uncertainty (motion_dim)
         #                         | temporal memory read-out (memory_dim) ]
         self.cond_proj = nn.Linear(num_checks + cond_dim + self.motion_dim + self.memory_dim,
-                                   hidden)
+                                  hidden)
+        self.completion_proj = nn.Linear(2 * dim, hidden)
+        nn.init.normal_(self.completion_proj.weight, std=0.02)
+        nn.init.zeros_(self.completion_proj.bias)
         # FiLM from the condition's global statistics (long-term modulation)
         self.film = nn.Linear(hidden * 2, hidden * 2)
         nn.init.zeros_(self.film.weight)
         nn.init.zeros_(self.film.bias)
         self.step_embed = nn.Parameter(torch.zeros(self.steps, hidden))
-        # see the refiner: a zero ``up`` would starve every conditioning path of gradient, so
-        # identity comes from a small scalar gate (sigmoid(-8) ~ 3.4e-4) instead.
+        # REVISED 2026-10-04 -- same reasoning as the refiner above: a large negative gate on
+        # the *output* collapses the whole branch (and therefore the gradient to the syndrome,
+        # motion and memory conditioning paths) to ~3e-4 of nominal.  Instead, ``up`` starts
+        # small-but-nonzero and the gate starts moderate, so the step-0 product is still tiny
+        # while ``d(residual)/d(conditioning)`` stays usable.
         self.up = nn.Linear(hidden, dim)
+        nn.init.normal_(self.up.weight, mean=0.0, std=float(up_init_std))
+        nn.init.zeros_(self.up.bias)
         self.residual_gate = nn.Parameter(torch.full((1,), float(residual_gate_init)))
 
         # No projector is applied to an already zero-initialised residual head: a dead
@@ -251,6 +291,7 @@ class NoiseModulatedDenoiser(nn.Module):
 
     def forward(self, tokens: torch.Tensor, condition: torch.Tensor,
                 syndrome: Optional[torch.Tensor] = None,
+                completion: Optional[Dict[str, torch.Tensor]] = None,
                 motion: Optional[torch.Tensor] = None,
                 memory: Optional[torch.Tensor] = None,
                 token_error: Optional[torch.Tensor] = None,
@@ -329,6 +370,9 @@ class NoiseModulatedDenoiser(nn.Module):
 
             h = self.in_proj(x_in)                                  # (B, N, hidden)
             cond = self.cond_proj(full_cond)
+            if completion is not None:
+                moments = torch.cat([completion['pred_mean'], completion['pred_logvar']], dim=-1)
+                cond = cond + self.completion_proj(moments).unsqueeze(1)
             h = h + self.step_embed[t].view(1, 1, -1)
             h = self.norm1(h)
 

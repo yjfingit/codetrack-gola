@@ -1,0 +1,441 @@
+{
+  "device": "NVIDIA GeForce RTX 4090",
+  "torch": "2.5.1+cu124",
+  "modules_passed": 11,
+  "modules_total": 11,
+  "all_passed": true,
+  "rows": [
+    {
+      "module": "parity_check",
+      "parameter_tensors": 1,
+      "gradient_tensors": 1,
+      "first_step_nonzero_gradient_tensors": 1,
+      "nonzero_gradient_tensors": 1,
+      "changed_parameter_tensors": 1,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.787590980529785,
+      "grad_l1": 0.01446908712387085,
+      "grad_max": 0.0001380594476358965,
+      "delta_l2": 0.02761717140674591,
+      "delta_max": 0.0009999275207519531,
+      "boundary_shapes": {
+        "H_bar": [
+          64,
+          256
+        ]
+      },
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "diagnosis",
+      "parameter_tensors": 19,
+      "gradient_tensors": 19,
+      "first_step_nonzero_gradient_tensors": 19,
+      "nonzero_gradient_tensors": 19,
+      "changed_parameter_tensors": 19,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.787590026855469,
+      "grad_l1": 725.1732177734375,
+      "grad_max": 0.27836501598358154,
+      "delta_l2": 0.5735305547714233,
+      "delta_max": 0.0010004043579101562,
+      "boundary_shapes": [
+        {
+          "q": [
+            2,
+            256
+          ],
+          "q_logits": [
+            2,
+            256
+          ],
+          "s": [
+            2,
+            64
+          ],
+          "s_logits": [
+            2,
+            64
+          ],
+          "C_obs": [
+            2,
+            64,
+            128
+          ],
+          "C_ref": [
+            2,
+            64,
+            128
+          ],
+          "U": [
+            2,
+            256,
+            128
+          ],
+          "R": [
+            2,
+            256,
+            128
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "template_pool",
+      "parameter_tensors": 4,
+      "gradient_tensors": 4,
+      "first_step_nonzero_gradient_tensors": 4,
+      "nonzero_gradient_tensors": 4,
+      "changed_parameter_tensors": 4,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.25208568572998,
+      "grad_l1": 447.5137023925781,
+      "grad_max": 0.018444394692778587,
+      "delta_l2": 1.0858298540115356,
+      "delta_max": 0.0010000001639127731,
+      "boundary_shapes": [
+        [
+          2,
+          768
+        ]
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "motion_prior",
+      "parameter_tensors": 7,
+      "gradient_tensors": 7,
+      "first_step_nonzero_gradient_tensors": 3,
+      "nonzero_gradient_tensors": 7,
+      "changed_parameter_tensors": 7,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 2,
+      "loss": 7.434169292449951,
+      "grad_l1": 0.6469472050666809,
+      "grad_max": 0.033810075372457504,
+      "delta_l2": 0.06165364757180214,
+      "delta_max": 0.001999553292989731,
+      "boundary_shapes": [
+        {
+          "motion_box": [
+            2,
+            4
+          ],
+          "motion_map": [
+            2,
+            1,
+            16,
+            16
+          ],
+          "uncertainty": [
+            2
+          ],
+          "innovation": [
+            2
+          ],
+          "mahalanobis": [
+            2
+          ],
+          "state": [
+            2,
+            8
+          ],
+          "cov_trace": [
+            2
+          ],
+          "temperature": [
+            2
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "temporal_memory",
+      "parameter_tensors": 11,
+      "gradient_tensors": 11,
+      "first_step_nonzero_gradient_tensors": 11,
+      "nonzero_gradient_tensors": 11,
+      "changed_parameter_tensors": 11,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.25208568572998,
+      "grad_l1": 65.02347564697266,
+      "grad_max": 0.04633665457367897,
+      "delta_l2": 0.6262653470039368,
+      "delta_max": 0.0010000020265579224,
+      "boundary_shapes": [
+        {
+          "memory": [
+            2,
+            3,
+            128
+          ],
+          "memory_reliability": [
+            2,
+            3,
+            1
+          ],
+          "readout": [
+            2,
+            128
+          ],
+          "prior_tokens": [
+            2,
+            8,
+            128
+          ],
+          "frame_reliability": [
+            2,
+            1
+          ],
+          "trc_confidence": [
+            2,
+            3
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "sparse_refiner",
+      "parameter_tensors": 23,
+      "gradient_tensors": 23,
+      "first_step_nonzero_gradient_tensors": 23,
+      "nonzero_gradient_tensors": 23,
+      "changed_parameter_tensors": 23,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.25208568572998,
+      "grad_l1": 517.7484741210938,
+      "grad_max": 0.010385135188698769,
+      "delta_l2": 1.6853915452957153,
+      "delta_max": 0.0010000001639127731,
+      "boundary_shapes": [
+        {
+          "X_rec": [
+            2,
+            256,
+            768
+          ],
+          "delta": [
+            2,
+            32,
+            768
+          ],
+          "suspect_index": [
+            2,
+            32
+          ],
+          "suspect_score": [
+            2,
+            32
+          ],
+          "attn": [
+            2,
+            4,
+            32,
+            16
+          ],
+          "context": [
+            2,
+            32,
+            256
+          ],
+          "alpha": [
+            2,
+            256
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "condition_projection",
+      "parameter_tensors": 2,
+      "gradient_tensors": 2,
+      "first_step_nonzero_gradient_tensors": 2,
+      "nonzero_gradient_tensors": 2,
+      "changed_parameter_tensors": 2,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.787590980529785,
+      "grad_l1": 185.02919006347656,
+      "grad_max": 0.009215261787176132,
+      "delta_l2": 0.8859829902648926,
+      "delta_max": 0.0009999985340982676,
+      "boundary_shapes": [
+        [
+          2,
+          32,
+          768
+        ],
+        [
+          2,
+          256,
+          768
+        ]
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "denoiser",
+      "parameter_tensors": 28,
+      "gradient_tensors": 28,
+      "first_step_nonzero_gradient_tensors": 28,
+      "nonzero_gradient_tensors": 28,
+      "changed_parameter_tensors": 28,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 7.434709072113037,
+      "grad_l1": 1315.7330322265625,
+      "grad_max": 0.1369829773902893,
+      "delta_l2": 1.348992109298706,
+      "delta_max": 0.001000046730041504,
+      "boundary_shapes": [
+        {
+          "X_denoised": [
+            2,
+            256,
+            768
+          ],
+          "step_preds": [
+            [
+              2,
+              256,
+              768
+            ],
+            [
+              2,
+              256,
+              768
+            ]
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "meanvar_completion",
+      "parameter_tensors": 4,
+      "gradient_tensors": 4,
+      "first_step_nonzero_gradient_tensors": 4,
+      "nonzero_gradient_tensors": 4,
+      "changed_parameter_tensors": 4,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.787590980529785,
+      "grad_l1": 218.05096435546875,
+      "grad_max": 0.0472433976829052,
+      "delta_l2": 0.7685205936431885,
+      "delta_max": 0.0010000020265579224,
+      "boundary_shapes": [
+        {
+          "pred_mean": [
+            2,
+            768
+          ],
+          "pred_logvar": [
+            2,
+            768
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "template_gate",
+      "parameter_tensors": 6,
+      "gradient_tensors": 6,
+      "first_step_nonzero_gradient_tensors": 6,
+      "nonzero_gradient_tensors": 6,
+      "changed_parameter_tensors": 6,
+      "zero_gradient_parameters": [],
+      "unchanged_parameters": [],
+      "optimizer_steps": 1,
+      "loss": 8.787590980529785,
+      "grad_l1": 1.5171926021575928,
+      "grad_max": 0.030240755528211594,
+      "delta_l2": 0.06719820946455002,
+      "delta_max": 0.001000046730041504,
+      "boundary_shapes": [
+        {
+          "c_t": [
+            2
+          ],
+          "mean_topk_q": [
+            2
+          ],
+          "max_q": [
+            2
+          ]
+        }
+      ],
+      "output_finite": true,
+      "shape_ok": true,
+      "main_output_finite": true,
+      "main_shapes_ok": true,
+      "passed": true
+    },
+    {
+      "module": "token_corruption_injector",
+      "parameter_tensors": 0,
+      "mask_shape": [
+        2,
+        256
+      ],
+      "corrupted_tokens": 204,
+      "main_output_finite": true,
+      "passed": true
+    }
+  ]
+}

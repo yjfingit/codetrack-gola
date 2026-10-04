@@ -10,6 +10,7 @@ source scripts/00_env.sh
 fail=0
 ok()   { printf '  [ ok ] %s\n' "$1"; }
 bad()  { printf '  [FAIL] %s\n' "$1"; fail=1; }
+warn() { printf '  [warn] %s\n' "$1"; }
 
 echo "== preflight"
 
@@ -18,6 +19,24 @@ if "$PYTHON" -c 'import torch' 2>/dev/null; then
   ok "torch $("$PYTHON" -c 'import torch;print(torch.__version__)') cuda=$("$PYTHON" -c 'import torch;print(torch.cuda.is_available())')"
 else
   bad "python/torch unavailable at $PYTHON"
+fi
+
+# Import every runtime dependency named by requirements.txt plus the CUDA companion packages
+# used by the data/model path.  `pip check` catches incompatible installed versions.
+if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import cv2, exifread, fvcore, k_means_constrained, matplotlib, numpy, PIL
+import prettytable, psutil, rgbt, safetensors, scipy, tabulate, timm, torch
+import torchvision, tqdm, turbojpeg, wandb, yaml, zmq
+PY
+then
+  ok "Python runtime dependencies import successfully"
+else
+  bad "one or more Python runtime dependencies cannot be imported"
+fi
+if "$PYTHON" -m pip check >/dev/null 2>&1; then
+  ok "pip dependency graph has no broken requirements"
+else
+  bad "pip check reports incompatible or missing requirements"
 fi
 
 # 2. PyTurboJPEG (silent blocker: dataset loading raises only mid-run)
@@ -32,6 +51,17 @@ if [[ -f "$WEIGHT" ]]; then
   ok "checkpoint $WEIGHT ($(du -h "$WEIGHT" | cut -f1))"
 else
   bad "checkpoint missing: $WEIGHT"
+fi
+if "$PYTHON" - "$WEIGHT" <<'PY' >/dev/null 2>&1
+import sys, torch
+from safetensors.torch import load_file
+state = load_file(sys.argv[1])
+assert state and all(torch.isfinite(v).all() for v in state.values() if v.is_floating_point())
+PY
+then
+  ok "checkpoint is readable safetensors and all floating tensors are finite"
+else
+  bad "checkpoint cannot be read as finite safetensors: $WEIGHT"
 fi
 
 # 4. DINOv2 backbone cache
@@ -57,7 +87,7 @@ done
 if [[ -d third_party/GOLA/trackit ]]; then
   ok "third_party/GOLA reference @ $(git -C third_party/GOLA rev-parse --short HEAD)"
 else
-  bad "third_party/GOLA reference checkout missing"
+  warn "third_party/GOLA reference checkout missing (optional; runtime uses the root working tree)"
 fi
 
 echo

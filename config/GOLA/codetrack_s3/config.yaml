@@ -151,6 +151,15 @@ run:
           # S3 additionally unfreezes the LAST TWO DINOv2 blocks (their base weights only;
           # their LoRA adapters were already in scope).  The first ten blocks stay frozen.
           parameter_scope: ["lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack", "blocks.10.", "blocks.11."]
+          # ADDED 2026-10-04.  ``parameter_scope`` is applied as a substring filter over
+          # parameters that ALREADY have requires_grad=True, and the trunk blocks only get
+          # that flag from ``GOLA/builder._unfreeze_backbone_scope`` -- which reads
+          # ``codetrack.backbone_scope``.  The optimiser reads ``optimizer.backbone_scope``
+          # separately (apply.py:53).  With only the literal entries above, the last two
+          # DINOv2 blocks were filtered out before they could be unlocked, so this stage ran
+          # without training them and the ``^blocks\.1[01]\.`` rule matched nothing
+          # ("rule must be effective").  Declaring the scope here is what the optimiser reads.
+          backbone_scope: ["blocks.10.", "blocks.11."]
           # ORDER AND STRUCTURE MATTER.
           #
           # ``zero_1d_param_weight_decay`` collects the parameters that must not be decayed
@@ -194,6 +203,12 @@ run:
               ndim: [ 0, 1 ]
               name_regex: '^head\.'
               lr: 5.e-6
+            # Foundation biases and norms need the same LR as foundation matrices.
+            # Exclude adapters: the last-2 blocks also contain trainable LoRA tensors.
+            - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
+              name_regex: '^blocks\.1[01]\.(?!.*lora)'
+              lr: 1.5e-6
             - type: "zero_1d_param_weight_decay"
         grad_accumulation_steps: 16
         max_grad_norm: 1.0

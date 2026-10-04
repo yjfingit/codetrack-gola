@@ -17,10 +17,10 @@
 RuntimeError: Unable to locate turbojpeg library automatically.
 ```
 
-**根因**：系统里已有 `/root/autodl-tmp/lab/tools/libturbojpeg.so.0`（→ `.so.0.2.0`），
+**根因**：系统里已有 `/home/yangjuanfeng/lab/tools/libjpeg-turbo/root/usr/lib/x86_64-linux-gnu/libturbojpeg.so.0`（→ `.so.0.2.0`），
 但该目录不在 `LD_LIBRARY_PATH` 中，`turbojpeg.py` 的自动探测找不到它。
 
-**修复**：`export LD_LIBRARY_PATH=/root/autodl-tmp/lab/tools`
+**修复**：`export LD_LIBRARY_PATH=/home/yangjuanfeng/lab/tools/libjpeg-turbo/root/usr/lib/x86_64-linux-gnu`
 （已固化在 `scripts/00_env.sh`）
 
 > ⚠️ 注意路径：`.so` 文件在 `tools/` **根目录**，不在 `tools/libjpeg-turbo/`（后者是空目录）。
@@ -45,8 +45,8 @@ set CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 | key | 本机取值 |
 |---|---|
-| `LasHeR_PATH` | `/root/autodl-tmp/lab/dataset/LasHeR/` |
-| `RGBT234_PATH` | `/root/autodl-tmp/lab/dataset/RGBT234/` |
+| `LasHeR_PATH` | `/home/yangjuanfeng/lab/dataset/LasHeR/` |
+| `RGBT234_PATH` | `/home/yangjuanfeng/lab/dataset/RGBT234/` |
 
 `LasHeR_PATH` 指向的目录名不必叫 `LasHeR0428`：代码只做
 `os.path.join(root_path, 'trainingset')` 与 `{root_path}trainingsetList.txt`

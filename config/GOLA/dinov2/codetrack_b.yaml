@@ -19,6 +19,8 @@ h_seed: 1234
 syndrome_hidden: 128
 syndrome_cos: true
 detection_prior: 0.2
+syndrome_logit_gain: 1.0
+syndrome_gain_calibration: true
 
 # block 4 -- motion prior + temporal memory
 motion_enabled: true
@@ -34,10 +36,10 @@ topk_tokens: 32          # K_max, 12.5% of N
 num_neighbours: 8        # K_n
 refiner_hidden: 256      # 768 -> 256 -> 768
 refiner_heads: 4
-# Single scalar controlling BOTH stage-0 identity and gradient reachability of the whole
-# correction branch (see codetrack/config.py).  sigmoid(-8) = 3.4e-4.  Do not set to a large
-# negative value: -12 connects the branch but leaves it effectively untrainable.
-residual_gate_init: -8.0
+# Small nonzero output weights keep corrections bounded; the gate stays learnable.
+residual_gate_init: 0.0
+up_init_std: 0.02
+motion_bias_normalise: true
 # How strongly the Kalman prior steers H-routed evidence selection (0 = ignored).
 motion_bias_scale: 0.5
 diffusion_enabled: true

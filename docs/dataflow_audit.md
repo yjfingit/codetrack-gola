@@ -5,7 +5,7 @@
 复现：
 
 ```bash
-export LD_LIBRARY_PATH=/root/autodl-tmp/lab/tools
+export LD_LIBRARY_PATH=/home/yangjuanfeng/lab/tools/libjpeg-turbo/root/usr/lib/x86_64-linux-gnu
 python tools/dataflow_audit.py        # 抓取 + 输出 /tmp/dataflow_grads.json
 python tools/interaction_matrix.py    # 归类成矩阵与梯度判定
 ```

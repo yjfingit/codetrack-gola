@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Sequence, Union, Tuple
 from trackit.core.runtime.global_constant import get_global_constant
 
@@ -56,6 +57,16 @@ class BaseSeed:
     @staticmethod
     def get_path_from_config(name: str):
         return get_global_constant(name)
+
+    @property
+    def cache_identity(self) -> str:
+        """Identity of the concrete dataset instance, not only its public name/split.
+
+        A train-dev view and the full dataset may both be called ``LasHeR-test``.  Including the
+        resolved root prevents one view from silently reusing another view's memory-map cache.
+        Dataset implementations may extend this with manifest content.
+        """
+        return os.path.realpath(self.root_path)
 
     def construct(self, constructor):
         raise NotImplementedError()

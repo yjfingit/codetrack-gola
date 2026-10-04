@@ -17,7 +17,9 @@ def set_dataset_attributes_cache_path(path: str):
     _cache_dir = path
 
 
-def prepare_dataset_cache_path(dataset_class_name, dataset_name: str, dataset_splits: Optional[Sequence[str]], dataset_filters: list):
+def prepare_dataset_cache_path(dataset_class_name, dataset_name: str,
+                               dataset_splits: Optional[Sequence[str]], dataset_filters: list,
+                               cache_identity: Optional[str] = None):
     cache_path = get_dataset_attributes_cache_path()
     cache_path = os.path.join(cache_path, dataset_class_name)
     if dataset_filters is not None:
@@ -25,6 +27,7 @@ def prepare_dataset_cache_path(dataset_class_name, dataset_name: str, dataset_sp
     if cache_path not in _dir_created:
         os.makedirs(cache_path, exist_ok=True)
         _dir_created.add(cache_path)
-    dataset_unique_id = generate_dataset_unique_id(dataset_name, dataset_splits, dataset_filters)
+    dataset_unique_id = generate_dataset_unique_id(
+        dataset_name, dataset_splits, dataset_filters, cache_identity=cache_identity)
     cache_file_name_prefix = slugify(dataset_unique_id)
     return cache_path, cache_file_name_prefix

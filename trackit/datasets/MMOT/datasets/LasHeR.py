@@ -2,6 +2,7 @@
 # Licensed under Apache-2.0: http://www.apache.org/licenses/LICENSE-2.0
 # Add LasHeR dataset
 
+import hashlib
 import os
 import numpy as np
 
@@ -21,6 +22,20 @@ class LasHeR_Seed(BaseSeed):
             supported_data_splits=('train', 'test'),
             data_split=data_split,
         )
+
+    @property
+    def cache_identity(self) -> str:
+        """Include sequence-list content so one-sequence/curated views never share caches."""
+        digest = hashlib.sha256()
+        digest.update(super().cache_identity.encode('utf-8'))
+        for split in self.data_split:
+            list_name = 'trainingsetList.txt' if split == 'train' else 'testingsetList.txt'
+            list_path = os.path.join(self.root_path, list_name)
+            digest.update(list_name.encode('utf-8'))
+            if os.path.isfile(list_path):
+                with open(list_path, 'rb') as file:
+                    digest.update(file.read())
+        return digest.hexdigest()
 
     def construct(self, constructor: MultiModalObjectTrackingDatasetConstructor):
         # Implement the dataset construction logic here

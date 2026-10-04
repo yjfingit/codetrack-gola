@@ -80,16 +80,7 @@ class GOLA_DINOv2(nn.Module):
     # ------------------------------------------------------------------ helpers
     def _codetrack_split(self, feat: torch.Tensor):
         """Slice fused tokens into (Z_RGB, X_RGB, Z_TIR, X_TIR, Z_on, D_TIR)."""
-        cfg = self.codetrack_cfg
-        z, x = cfg.z_len, cfg.x_len
-        return {
-            "Z_RGB": feat[:, 0 * z: 1 * z],
-            "X_RGB": feat[:, 1 * z: 1 * z + x],
-            "Z_TIR": feat[:, 2 * z: 2 * z + z],
-            "X_TIR": feat[:, 2 * z + z: 2 * z + z + x],
-            "Z_on": feat[:, 3 * z + x: 3 * z + x + z],
-            "D_TIR": feat[:, 4 * z + x: 4 * z + x + z],
-        }
+        return self.codetrack._split(feat)
 
     def _corruption_patch(self, x: torch.Tensor, apply: torch.Tensor, kind: str,
                           ratio: float, severity: float):
@@ -404,6 +395,12 @@ class GOLA_DINOv2(nn.Module):
             "c_t": out.get("c_t"),
             "motion_map_norm": out.get("motion_map_norm"),
             "motion_target": out.get("motion_target"),
+            # One-shot syndrome calibration.  The diagnosis head exports the RAW pre-sigmoid
+            # syndrome on its very first training forward; the training loop all-reduces the
+            # statistics across ranks and applies the gain/offset once.  Letting each rank
+            # calibrate locally would give the ranks different parameter values, and the first
+            # DDP all-reduce would then average four inconsistent models.
+            "syndrome_pending_calibration": out.get("syndrome_pending_calibration"),
         }
         result = {"score_map": head_out["score_map"], "boxes": head_out["boxes"],
                   "codetrack_extras": extras,

@@ -5,7 +5,7 @@
 方法：把"互补"拆成 4 条可证伪的性质，每一条都写成**可执行的检查**（`tools/complementarity_check.py`），而不是散文论证。当前结果 **16/16 通过**。
 
 ```bash
-export LD_LIBRARY_PATH=/root/autodl-tmp/lab/tools
+export LD_LIBRARY_PATH=/home/yangjuanfeng/lab/tools/libjpeg-turbo/root/usr/lib/x86_64-linux-gnu
 python tools/complementarity_check.py
 ```
 
