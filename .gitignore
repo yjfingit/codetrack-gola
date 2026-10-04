@@ -47,3 +47,17 @@ data/LasHeR_train10/
 # Mixins written at run time by tools/train_codetrack_staged.py (rebuilt on every run).
 config/GOLA/_mixin/staged_*.yaml
 *.log
+
+# ---------------------------------------------------------------------------
+# Local patch backups and scratch produced during debugging sessions.
+#   *.bak-*        : copies made before each in-place patch (kept locally so a
+#                    patch can be rolled back without git)
+#   _probe/*/out/  : grid-search / probe run outputs (checkpoints, logs)
+#   _probe/*/_*    : generator scratch dirs (e.g. _selftest, _dry)
+# ---------------------------------------------------------------------------
+*.bak-*
+*.bak
+_probe/grid/out/
+_probe/**/_selftest/
+_probe/**/_dry/
+_probe/**/checkpoint/

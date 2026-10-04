@@ -3,10 +3,9 @@
 #
 #   bash scripts/codetrack_train_smoke.sh
 #
-# Why the consts swap: the training source is an `!include` resolved while parsing the
-# config, and the mixin machinery can only replace *existing* keys, so the dataset cannot be
-# swapped from a mixin.  Instead consts.LasHeR_PATH is pointed at a one-line view
-# (data/LasHeR_train_single) for the duration of the run and restored afterwards.
+# The training source is an `!include` resolved while parsing the config, and the mixin
+# machinery cannot replace it.  TRACKIT_CONSTS_PATH points this process at a temporary constants
+# file, so the repository-wide consts.yaml is never mutated and train/eval smoke jobs may coexist.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
@@ -17,7 +16,6 @@ VIEW="$PWD/data/LasHeR_train_single"
 CONFIG="${CONFIG:-codetrack_smoke}"
 OUT="${OUT:-$PWD/outputs/codetrack_smoke}"
 CONSTS="$PWD/consts.yaml"
-BACKUP="$CONSTS.codetrack_backup"
 
 mkdir -p "$VIEW" "$OUT"
 DS="$(sed -n "s|^LasHeR_PATH: '\(.*\)'|\1|p" "$CONSTS")"
@@ -29,13 +27,10 @@ for item in trainingset testingset annos AttriSeqsTxt Attributes_order.txt; do
   [[ -e "$DS/$item" ]] && ln -sfn "$DS/$item" "$VIEW/$item"
 done
 
-restore() {
-  if [[ -f "$BACKUP" ]]; then mv -f "$BACKUP" "$CONSTS"; echo "[restored] consts.yaml"; fi
-}
-trap restore EXIT
-
-cp -a "$CONSTS" "$BACKUP"
-"$PYTHON" - "$CONSTS" "$VIEW" <<'PY'
+RUN_CONSTS="$(mktemp "$OUT/consts.XXXXXX.yaml")"
+trap 'rm -f "$RUN_CONSTS"' EXIT
+cp -a "$CONSTS" "$RUN_CONSTS"
+"$PYTHON" - "$RUN_CONSTS" "$VIEW" <<'PY'
 import sys
 path, view = sys.argv[1], sys.argv[2]
 s = open(path).read()
@@ -47,7 +42,8 @@ for line in s.splitlines(keepends=True):
 assert hit == 1, f"expected exactly 1 LasHeR_PATH line, found {hit}"
 open(path, 'w').write(''.join(out))
 PY
-echo "[swap] consts.LasHeR_PATH -> $VIEW/"
+export TRACKIT_CONSTS_PATH="$RUN_CONSTS"
+echo "[view] TRACKIT_CONSTS_PATH=$RUN_CONSTS (LasHeR_PATH -> $VIEW/)"
 echo "[run ] CodeTrack joint training on sequence: $SEQ"
 
 "$PYTHON" main.py GOLA "$CONFIG" \

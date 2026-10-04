@@ -3,7 +3,7 @@
 #
 #   bash scripts/codetrack_eval_single.sh
 #
-# Point consts.LasHeR_PATH at the one-line view for the duration of the run, then restore.
+# Point this process at a run-local constants file; never mutate the shared consts.yaml.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
@@ -14,7 +14,6 @@ CONFIG="${CONFIG:-codetrack_eval}"
 VIEW="$PWD/data/LasHeR_single"
 OUT="${OUT:-$PWD/outputs/codetrack_eval_$SEQ}"
 CONSTS="$PWD/consts.yaml"
-BACKUP="$CONSTS.eval_backup"
 
 mkdir -p "$VIEW" "$OUT"
 printf '%s\n' "$SEQ" > "$VIEW/testingsetList.txt"
@@ -25,11 +24,10 @@ for item in trainingset testingset annos AttriSeqsTxt Attributes_order.txt; do
   [[ -e "$DS/$item" ]] && ln -sfn "$DS/$item" "$VIEW/$item"
 done
 
-restore() { if [[ -f "$BACKUP" ]]; then mv -f "$BACKUP" "$CONSTS"; echo "[restored] consts.yaml"; fi; }
-trap restore EXIT
-
-cp -a "$CONSTS" "$BACKUP"
-"$PYTHON" - "$CONSTS" "$VIEW" <<'PY'
+RUN_CONSTS="$(mktemp "$OUT/consts.XXXXXX.yaml")"
+trap 'rm -f "$RUN_CONSTS"' EXIT
+cp -a "$CONSTS" "$RUN_CONSTS"
+"$PYTHON" - "$RUN_CONSTS" "$VIEW" <<'PY'
 import sys
 path, view = sys.argv[1], sys.argv[2]
 s = open(path).read(); out, hit = [], 0
@@ -40,7 +38,8 @@ for line in s.splitlines(keepends=True):
 assert hit == 1, f"expected 1 LasHeR_PATH line, found {hit}"
 open(path, 'w').write(''.join(out))
 PY
-echo "[swap] consts.LasHeR_PATH -> $VIEW/"
+export TRACKIT_CONSTS_PATH="$RUN_CONSTS"
+echo "[view] TRACKIT_CONSTS_PATH=$RUN_CONSTS (LasHeR_PATH -> $VIEW/)"
 echo "[run ] CodeTrack inference on sequence: $SEQ"
 
 ANS="$OUT/answer.bin"

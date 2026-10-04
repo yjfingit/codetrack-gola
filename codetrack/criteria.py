@@ -530,8 +530,10 @@ class CodeTrackCriteria(nn.Module):
             # same trust signal used for the memory reliability head.  Slot 0 is the
             # ground-truth-derived anchor, pinned to 1.0 by construction, so it is excluded.
             trc_c = extras.get("trc_confidence")
-            if trc_c is not None and self.lambda_trc > 0 and trc_c.shape[1] > 1:
-                c_dyn = trc_c[:, 1:].reshape(trc_c.shape[0], -1)
+            if trc_c is not None and self.lambda_trc > 0:
+                # Slot 0 is the newest search frame; only its current corruption label is
+                # known here.  Applying that label to history frames mislabels clean history.
+                c_dyn = trc_c[:, :1].reshape(trc_c.shape[0], -1)
                 tgt = trust.unsqueeze(-1).expand_as(c_dyn)
                 l_trc = F.binary_cross_entropy_with_logits(
                     _logit(c_dyn.float()), tgt.float())

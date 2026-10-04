@@ -4,11 +4,10 @@
 #   bash scripts/single_seq_eval.sh            # sequence 10runone (default)
 #   SEQ=11leftboy bash scripts/single_seq_eval.sh
 #
-# Why a swap: trackit reads the .txt sequence list from <LasHeR_PATH> directly
+# trackit reads the .txt sequence list from <LasHeR_PATH> directly
 # (trackit/datasets/MMOT/datasets/LasHeR.py), and consts.yaml is loaded globally rather
-# than through the config tree, so a mixin cannot redirect it. We therefore point
-# consts.yaml at a read-only symlink view containing a one-line testingsetList.txt,
-# and restore it afterwards (also on failure).
+# than through the config tree, so a mixin cannot redirect it. TRACKIT_CONSTS_PATH gives this
+# process an isolated constants copy containing a one-line testingsetList.txt view.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
@@ -18,7 +17,6 @@ SEQ="${SEQ:-10runone}"
 VIEW="$PWD/data/LasHeR_single"
 OUT="${OUT:-$PWD/outputs/eval_single_$SEQ}"
 CONSTS="$PWD/consts.yaml"
-BACKUP="$CONSTS.single_seq_backup"
 
 # ---- build the one-sequence view (read-only symlinks; dataset untouched) -------
 mkdir -p "$VIEW" "$OUT"
@@ -31,14 +29,11 @@ for item in testingset annos AttriSeqsTxt Attributes_order.txt; do
   [[ -e "$DS/$item" ]] && ln -sfn "$DS/$item" "$VIEW/$item"
 done
 
-restore() {
-  if [[ -f "$BACKUP" ]]; then mv -f "$BACKUP" "$CONSTS"; echo "[restored] consts.yaml"; fi
-}
-trap restore EXIT
-
-# ---- swap consts.yaml to the single-sequence view -----------------------------
-cp -a "$CONSTS" "$BACKUP"
-"$PYTHON" - "$CONSTS" "$VIEW" <<'PY'
+# ---- make a process-local constants file for the single-sequence view ----------
+RUN_CONSTS="$(mktemp "$OUT/consts.XXXXXX.yaml")"
+trap 'rm -f "$RUN_CONSTS"' EXIT
+cp -a "$CONSTS" "$RUN_CONSTS"
+"$PYTHON" - "$RUN_CONSTS" "$VIEW" <<'PY'
 import sys
 path, view = sys.argv[1], sys.argv[2]
 s = open(path).read()
@@ -50,7 +45,8 @@ for line in s.splitlines(keepends=True):
 assert hit == 1, f"expected exactly 1 LasHeR_PATH line, found {hit}"
 open(path, 'w').write(''.join(out))
 PY
-echo "[swap] consts.yaml LasHeR_PATH -> $VIEW/"
+export TRACKIT_CONSTS_PATH="$RUN_CONSTS"
+echo "[view] TRACKIT_CONSTS_PATH=$RUN_CONSTS (LasHeR_PATH -> $VIEW/)"
 echo "[run ] evaluating sequence: $SEQ"
 
 # ---- official eval path ------------------------------------------------------

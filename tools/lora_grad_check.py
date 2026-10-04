@@ -30,7 +30,8 @@ from trackit.models.backbone.builder import build_backbone  # noqa: E402
 from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
 from codetrack.criteria import CodeTrackCriteria  # noqa: E402
 
-WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
 CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
            num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
            topk_tokens=32, num_neighbours=8, refiner_hidden=256, diffusion_steps=2,

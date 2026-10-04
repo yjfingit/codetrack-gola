@@ -21,6 +21,60 @@ from ..common.optimization import OptimizationModulesAndOptions
 from .utils import criterion_has_parameters
 
 
+def _consume_syndrome_calibration(module: nn.Module, extras) -> bool:
+    """Apply the one-shot, CROSS-RANK syndrome gain/offset calibration.
+
+    The diagnosis head exports the raw pre-sigmoid syndrome on its first training
+    forward (``codetrack_extras['syndrome_pending_calibration']``).  We aggregate the
+    statistics over all ranks here -- OUTSIDE the model -- and apply the result once.
+
+    Why not inside ``forward``: by the time a forward runs, DDP has already built its
+    reducer buckets, so a collective there can deadlock.  Why not per-rank: each rank
+    would derive its own gain from its own shard, and the first all-reduce would then
+    mix four inconsistent parameter sets.
+
+    Returns True when a calibration was applied.
+    """
+    if extras is None:
+        return False
+    pending = extras.get("syndrome_pending_calibration")
+    if pending is None:
+        return False
+    # ``diagnosis`` is owned by the CodeTrack sub-module (codetrack/codetrack.py:87
+    # ``self.diagnosis = SyndromeDiagnosis(...)``), NOT by the top-level model.
+    # Walk the chain explicitly instead of guessing.
+    diagnosis = None
+    for holder in (module, getattr(module, "codetrack", None),
+                   getattr(getattr(module, "module", None), "codetrack", None),
+                   getattr(module, "module", None)):
+        if holder is None:
+            continue
+        cand = getattr(holder, "diagnosis", None)
+        if cand is not None:
+            diagnosis = cand
+            break
+    if diagnosis is None:
+        return False
+    try:
+        from codetrack.ddp_calibration import consume_pending_calibration
+    except Exception:
+        return False
+    gain = consume_pending_calibration(diagnosis, pending)
+    if gain is not None:
+        rank = 0
+        try:
+            import torch.distributed as _dist
+            if _dist.is_available() and _dist.is_initialized():
+                rank = _dist.get_rank()
+        except Exception:
+            pass
+        print(f"[rank {rank}] syndrome calibration applied: "
+              f"gain={gain:.6f} offset={float(diagnosis.syndrome_logit_offset.detach().item()):.6f}",
+              flush=True)
+        return True
+    return False
+
+
 class DefaultTrainer(Runner):
     def __init__(self, model: ModelInstance, criterion: nn.Module,
                  optimization_modules: OptimizationModulesAndOptions,
@@ -152,6 +206,12 @@ class DefaultTrainer(Runner):
                     metrics.update(criterion_output.metrics)
                 if criterion_output.extra_metrics is not None:
                     metrics.update(criterion_output.extra_metrics)
+
+                # One-shot cross-rank syndrome calibration: the diagnosis head hands us the
+                # raw syndrome on its first training forward.  Consume it here, before the
+                # first backward, so every rank shares one calibrated gain/offset.
+                if self.is_train:
+                    _consume_syndrome_calibration(self._model, criterion_output.extra_metrics)
 
                 if not torch.isfinite(criterion_output.loss):
                     output_path = get_current_task_context().get_output_path()

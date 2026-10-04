@@ -90,10 +90,10 @@ source scripts/00_env.sh && "$PYTHON" profile_model.py GOLA dinov2 --device cuda
 
 | Item | Value |
 |---|---|
-| Python env | `/root/autodl-tmp/lab/envs/gola/bin/python` (3.10.8, torch 2.5.1+cu124) |
-| GPU | RTX 4090 D 24 GB |
-| Datasets | `consts.yaml` -> `/root/autodl-tmp/lab/dataset/{LasHeR,RGBT234}` |
-| libturbojpeg | `/root/autodl-tmp/lab/tools/libturbojpeg.so.0` (needs `LD_LIBRARY_PATH`) |
+| Python env | `/home/yangjuanfeng/lab/envs/gola/bin/python` (3.10.8, torch 2.5.1+cu124) |
+| GPU | RTX 4090 24 GB (8x, shared) |
+| Datasets | `consts.yaml` -> `/home/yangjuanfeng/lab/dataset/{LasHeR,RGBT234}` |
+| libturbojpeg | `/home/yangjuanfeng/lab/tools/libjpeg-turbo/root/usr/lib/x86_64-linux-gnu/libturbojpeg.so.0` (needs `LD_LIBRARY_PATH`) |
 | Backbone | DINOv2 ViT-B/14, cached at `~/.cache/torch/hub/checkpoints/` |
 | Checkpoint | `weights/gola_b224.bin` — GOLA-B, the model used for the paper's LasHeR results |
 
@@ -125,7 +125,7 @@ Implemented in `codetrack/`; the only changes to upstream `trackit/` are four ad
 ```bash
 source scripts/00_env.sh                     # required: turbojpeg + CuBLAS determinism
 bash scripts/preflight.sh                    # env / weights / dataset self-check
-"$PYTHON" tools/preflight_acceptance.py      # 86 structural checks against the REAL stage configs
+"$PYTHON" tools/preflight_acceptance.py      # 104 structural checks against the REAL stage configs
 "$PYTHON" tools/codetrack_verify.py          # identity @ step 0, checkpoint, shape audit, gradients
 "$PYTHON" tools/dataflow_audit.py            # instrumented real training step: who talks to whom
 "$PYTHON" tools/complementarity_check.py     # 16 assertions that the modules cannot collapse into each other

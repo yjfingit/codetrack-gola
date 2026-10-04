@@ -1,0 +1,37 @@
+# Grid-1 plan.  Each line: <trial>|<k=v,k=v,...>
+#
+# Round 1 reads the loss curve, not the benchmark, so every trial runs the SAME
+# 400 optimizer updates on ONE card and differs only in the knobs below.
+#
+# Fixed for all trials: max_updates=400, t_initial_updates=400, warmup=50.
+#
+# Axis A -- learning rate under a short cosine budget.
+# Axis B -- effective batch (global_batch_size x grad_accumulation_steps).
+# Axis C -- the CodeTrack loss balance, which is the only thing that decides
+#           whether the calibration/parity branch actually learns anything.
+
+# ---- Axis A: lr sweep at the repo-default batch (8 x 16 = 128) -------------
+lr_5e5      |lr=5e-5,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+lr_1e4      |lr=1e-4,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+lr_2e4      |lr=2e-4,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+lr_5e4      |lr=5e-4,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+
+# ---- Axis B: batch shape at the best-guess lr ------------------------------
+# micro 16 x accum 8  = 128 effective, half the optimizer-step count per sample
+bs_16x8     |lr=1e-4,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+# micro 8 x accum 8   = 64 effective (fastest wall clock, noisiest gradient)
+bs_8x8      |lr=1e-4,global_batch_size=8,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+# micro 4 x accum 32  = 128 effective, smallest footprint
+bs_4x32     |lr=1e-4,global_batch_size=4,grad_accumulation_steps=32,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+
+# ---- Axis C: CodeTrack loss balance ---------------------------------------
+# recovery/diagnosis carry the ECC story but are the easiest to over-weight.
+diag_lo     |lr=1e-4,lambda_diag=0.1,lambda_rec=0.1,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+diag_hi     |lr=1e-4,lambda_diag=1.0,lambda_rec=0.5,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+# push the orthogonality/preservation terms harder -- they are what keeps the
+# frozen backbone's representation intact
+reg_hi      |lr=1e-4,lambda_align=0.5,lambda_pres=0.1,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+# let the tracking objective dominate; CodeTrack becomes a pure auxiliary head
+track_hi    |lr=1e-4,w_track_clean=0.5,lambda_gain=0.5,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50
+# diagnosis_alpha: weight of the feature-space vs task-space error target
+alpha_lo    |lr=1e-4,diagnosis_alpha=0.2,max_updates=400,t_initial_updates=400,warmup_updates=50,sched_warmup_updates=50

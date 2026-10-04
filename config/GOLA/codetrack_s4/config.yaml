@@ -152,6 +152,15 @@ run:
           # to learn the temporal branch, so letting the foundation drift would confound the
           # comparison.  (If S3 was rejected the numbers are simply absent from the checkpoint.)
           parameter_scope: ["lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack", "blocks.10.", "blocks.11."]
+          # ADDED 2026-10-04.  ``parameter_scope`` is applied as a substring filter over
+          # parameters that ALREADY have requires_grad=True, and the trunk blocks only get
+          # that flag from ``GOLA/builder._unfreeze_backbone_scope`` -- which reads
+          # ``codetrack.backbone_scope``.  The optimiser reads ``optimizer.backbone_scope``
+          # separately (apply.py:53).  With only the literal entries above, the last two
+          # DINOv2 blocks were filtered out before they could be unlocked, so this stage ran
+          # without training them and the ``^blocks\.1[01]\.`` rule matched nothing
+          # ("rule must be effective").  Declaring the scope here is what the optimiser reads.
+          backbone_scope: ["blocks.10.", "blocks.11."]
           # ORDER AND STRUCTURE MATTER.
           #
           # ``zero_1d_param_weight_decay`` collects the parameters that must not be decayed

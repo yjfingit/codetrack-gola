@@ -1,0 +1,37 @@
+{
+  "config": "/home/yangjuanfeng/lab/projects/gola-CodeTrack/config/GOLA/codetrack_s1/config.yaml",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "gain": 7.998216152191162,
+  "offset": 1.154863953590393,
+  "raw_logit_mean": 1.154863953590393,
+  "raw_logit_std": 0.1250278800725937,
+  "gain_only_s_std": 0.00017392978770658374,
+  "before": {
+    "q": 0.0007578523945994675,
+    "s": 0.022861259058117867
+  },
+  "after": {
+    "q": 0.00679839588701725,
+    "s": 0.21320737898349762
+  },
+  "topk_gap_before": 0.001005798578262329,
+  "topk_gap_after": 0.009286195039749146,
+  "refiner_up_std": 0.020012807101011276,
+  "denoiser_up_std": 0.0199800506234169,
+  "residual_gate": 0.0,
+  "calibration_once": true,
+  "checkpoint_preserved": true,
+  "gain_grad": 8.47771589178592e-05,
+  "offset_grad": 0.030407417565584183
+}

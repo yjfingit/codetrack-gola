@@ -1,0 +1,507 @@
+diff --git a/codetrack/codetrack.py b/codetrack/codetrack.py
+index 73ccb99..07d39e3 100644
+--- a/codetrack/codetrack.py
++++ b/codetrack/codetrack.py
+@@ -87,7 +87,8 @@ class CodeTrack(nn.Module):
+         self.diagnosis = SyndromeDiagnosis(
+             dim=cfg.dim, mid_dim=cfg.mid_dim, num_checks=cfg.num_checks,
+             num_variables=cfg.x_len, syndrome_hidden=cfg.syndrome_hidden,
+-            detection_prior=cfg.detection_prior, use_cos=cfg.syndrome_cos)
++            detection_prior=cfg.detection_prior, use_cos=cfg.syndrome_cos,
++            syndrome_logit_gain=cfg.syndrome_logit_gain)
+         # variable -> variable relation used for H-routing (from the same incidence)
+         # ``persistent=False`` on purpose: upstream ``GOLA_DINOv2.state_dict`` walks every
+         # key and calls ``get_parameter`` on it, which raises for a persistent buffer it does
+@@ -115,7 +116,8 @@ class CodeTrack(nn.Module):
+             dim=cfg.dim, hidden=cfg.refiner_hidden, heads=cfg.refiner_heads,
+             num_neighbours=cfg.num_neighbours, memory_dim=cfg.memory_dim,
+             dropout=cfg.refiner_dropout, residual_gate_init=cfg.residual_gate_init,
+-            motion_bias_scale=cfg.motion_bias_scale)
++            motion_bias_scale=cfg.motion_bias_scale, up_init_std=cfg.up_init_std,
++            motion_bias_normalise=cfg.motion_bias_normalise)
+ 
+         # condition for the denoiser = [H-routed context (bottleneck) | aux tokens],
+         # then projected back to the token dim so it can also be scattered into token
+@@ -126,7 +128,8 @@ class CodeTrack(nn.Module):
+             steps=cfg.diffusion_steps, num_checks=cfg.num_checks, cond_dim=cfg.dim,
+             noise_schedule_power=cfg.noise_schedule_power,
+             write_schedule=getattr(cfg, "diffusion_write_schedule", "ramp"),
+-            residual_gate_init=cfg.residual_gate_init) if cfg.diffusion_enabled else None
++            residual_gate_init=cfg.residual_gate_init,
++            up_init_std=cfg.up_init_std) if cfg.diffusion_enabled else None
+         self.meanvar = MeanVarCompletion(dim=cfg.dim, hidden=cfg.diffusion_hidden)
+ 
+         # ---- block 6: template protection -------------------------------------
+diff --git a/codetrack/config.py b/codetrack/config.py
+index 0f37060..e9a5760 100644
+--- a/codetrack/config.py
++++ b/codetrack/config.py
+@@ -70,6 +70,16 @@ class CodeTrackConfig:
+     # ``bias = log(motion_map) * motion_bias_scale``.  This is the only knob governing how
+     # strongly the motion prior steers evidence routing (0 = motion ignored by the refiner).
+     motion_bias_scale: float = 0.5
++    # Centre and standardise the log-space motion bias before scaling it.  Without this the
++    # bias is a near-constant (measured logit spread 0.05 nats over 8 neighbours, because the
++    # unit-mass motion map sits at 1/256 +- 2e-3), so the Kalman prior cannot influence
++    # attention at all.  False reproduces the pre-2026-10-04 numerics exactly.
++    motion_bias_normalise: bool = True
++    # Init std of the residual predictor's output layer inside BOTH the refiner and the
++    # denoiser.  Replaces the old "large negative residual gate" idiom: a small nonzero
++    # ``up`` keeps step-0 output near identity while leaving the conditioning paths their
++    # gradient.  See codetrack/recovery.py for the measurements behind this.
++    up_init_std: float = 0.02
+ 
+     # ---- block 5: diffusion / noising-denoising correction ------------------
+     # SCDT-style noising-denoising: weak/strong noise on the *available* features,
+@@ -168,6 +178,12 @@ class CodeTrackConfig:
+     corruption_severity: float = 0.4
+     diagnosis_alpha: float = 0.5          # e* = a*e_feat + (1-a)*e_task
+     detection_prior: float = 0.2          # syndrome sigmoid bias init
++    # Initial gain on the raw syndrome logit.  The stock head produces s_raw with a spread of
++    # only ~0.2 over 64 checks, so s = sigmoid(s_raw) is a point mass at 0.794 and every
++    # consumer of q degenerates (constant q -> random TopK routing, non-selective noise gate,
++    # one frame-reliability value per batch).  ``calibrate_syndrome_gain`` sets this from the
++    # measured logit std; 1.0 disables the correction.
++    syndrome_logit_gain: float = 1.0
+ 
+     # ---- stage-specific DINOv2 unfreezing (S3) ------------------------------
+     # Name prefixes of otherwise-frozen backbone parameters whose gradient is re-enabled.  Empty
+diff --git a/codetrack/ecc.py b/codetrack/ecc.py
+index ba6c7b6..40ac059 100644
+--- a/codetrack/ecc.py
++++ b/codetrack/ecc.py
+@@ -186,7 +186,8 @@ class SyndromeDiagnosis(nn.Module):
+                  template_dim: Optional[int] = None,
+                  support: Optional[torch.Tensor] = None,
+                  detection_prior: float = 0.2,
+-                 use_cos: bool = True):
++                 use_cos: bool = True,
++                 syndrome_logit_gain: float = 1.0):
+         super().__init__()
+         self.dim = dim
+         self.mid_dim = mid_dim
+@@ -221,6 +222,22 @@ class SyndromeDiagnosis(nn.Module):
+         self.residual_scale = nn.Parameter(torch.ones(1))
+         self.check_scale = nn.Parameter(torch.ones(num_checks))
+ 
++        # ---- syndrome saturation guard (added 2026-10-04) ----------------------
++        # MEASURED DEFECT.  With the stock init, ``s_raw`` lands at ~0.2, so
++        # ``s = sigmoid(s_raw)`` sits at 0.794 +- 0.0097 over 64 checks.  The damage
++        # propagates through ``q_logits = H^T s + vote_bias``: the transmitted term has a
++        # spread of only 2e-3 over 256 tokens, so ``q`` is constant to 3e-4 and, measured on
++        # the same checkpoint,
++        #   * ``TopK(q)`` selects a set 4.1e-4 away from the population mean -> near-random;
++        #   * the denoiser noise gate spans max/min = 1.01x over 256 tokens (not selective);
++        #   * ``frame_reliability`` is one value per batch (std 3.3e-5).
++        # A point-mass head cannot be trained out of the point mass by the ordinary loss,
++        # because every token sees the same gradient.  The spread has to exist at
++        # initialisation.  This learnable scalar rescales the raw logit; its initial value is
++        # set by ``calibrate_syndrome_gain`` below from the measured logit std.
++        self.syndrome_logit_gain = nn.Parameter(
++            torch.full((1,), float(syndrome_logit_gain)))
++
+         # q = sigmoid(H^T s + b)
+         self.vote_bias = nn.Parameter(torch.zeros(num_variables))
+         # biased start at the expected corruption density (a 0 bias starts at 0.5,
+@@ -229,6 +246,22 @@ class SyndromeDiagnosis(nn.Module):
+         with torch.no_grad():
+             self.vote_bias.fill_(float(torch.logit(torch.tensor(prior))))
+ 
++    @torch.no_grad()
++    def calibrate_syndrome_gain(self, s_raw: torch.Tensor, target_std: float = 1.0) -> float:
++        """Set ``syndrome_logit_gain`` so the *pre-sigmoid* syndrome spans ``target_std``.
++
++        Called once with a batch from the real data pipeline.  ``s_raw`` is the logit produced
++        with a gain of 1.0; if it is already wide enough the gain stays at 1.0.  This keeps the
++        fix data-driven instead of introducing a tuned constant, and it is a no-op on any
++        checkpoint whose head is already unsaturated.
++        """
++        cur = float(s_raw.detach().float().std())
++        if cur <= 1e-8:
++            return float(self.syndrome_logit_gain)
++        gain = float(min(max(target_std / cur, 1.0), 1e3))
++        self.syndrome_logit_gain.fill_(gain)
++        return gain
++
+     def forward(self, X_t: torch.Tensor, X_aux: torch.Tensor,
+                 H_bar: torch.Tensor,
+                 template_context: Optional[torch.Tensor] = None,
+@@ -254,6 +287,9 @@ class SyndromeDiagnosis(nn.Module):
+         # explicit magnitude term (a small difference is otherwise invisible to an MLP)
+         s_raw = s_raw + self.residual_scale * delta.pow(2).mean(dim=-1).sqrt()
+         s_raw = s_raw * self.check_scale
++        # See ``syndrome_logit_gain`` in ``__init__``: without this scale the 64 checks
++        # collapse to a point mass and every downstream consumer of ``q`` degenerates.
++        s_raw = s_raw * self.syndrome_logit_gain
+         s = torch.sigmoid(s_raw)                                # (B, M)
+ 
+         q_logits = torch.einsum("mn,bm->bn", H_bar, s) + self.vote_bias
+diff --git a/codetrack/recovery.py b/codetrack/recovery.py
+index dc14532..6415163 100644
+--- a/codetrack/recovery.py
++++ b/codetrack/recovery.py
+@@ -41,7 +41,8 @@ class H_RoutedSparseRefiner(nn.Module):
+     def __init__(self, dim: int = 768, hidden: int = 256, heads: int = 4,
+                  num_neighbours: int = 8, template_dim: Optional[int] = None,
+                  memory_dim: int = 128, dropout: float = 0.0,
+-                 residual_gate_init: float = -8.0, motion_bias_scale: float = 0.5):
++                 residual_gate_init: float = -8.0, motion_bias_scale: float = 0.5,
++                 up_init_std: float = 0.02, motion_bias_normalise: bool = True):
+         super().__init__()
+         self.dim = dim
+         self.hidden = hidden
+@@ -49,6 +50,7 @@ class H_RoutedSparseRefiner(nn.Module):
+         self.num_neighbours = num_neighbours
+         self.memory_dim = memory_dim
+         self.motion_bias_scale = float(motion_bias_scale)
++        self.motion_bias_normalise = bool(motion_bias_normalise)
+ 
+         # condition = [ K_n neighbours (flattened) | X_aux_i | template | memory | q_i ]
+         neighbour_dim = dim * num_neighbours
+@@ -63,17 +65,23 @@ class H_RoutedSparseRefiner(nn.Module):
+         self.out_proj = nn.Linear(hidden, hidden)
+         self.norm = nn.LayerNorm(hidden)
+         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+-        # 256 -> 768 residual predictor.  Deliberately *not* zero-initialised: if ``up``
+-        # starts at zero then ``pred = 0``, and since the residual enters as ``w * pred``
+-        # the gradient to every upstream branch (motion prior, memory, condition projection,
+-        # attention) is multiplied by ``up.weight = 0`` and vanishes.  Identity at step 0 is
+-        # instead enforced by ``residual_gate`` below.  Its bias starts at ``-8``
+-        # (sigmoid ~ 3.4e-4): the residual is small enough that stage-0 output matches the GOLA
+-        # baseline, while d(residual)/d(up) stays large enough to train the upstream branches.
+-        # Measured on this model, the gradient reaching the temporal memory is ~50x larger at
+-        # -8 than at -12 (1.7e-5 vs 3.1e-7), where the branch is connected but effectively
+-        # untrainable.  The gate can only grow from here.
++        # 512 -> 768 residual predictor.
++        #
++        # REVISED 2026-10-04.  The previous design put the entire "be the identity at step 0"
++        # burden on a large negative scalar gate (sigmoid(-8) = 3.35e-4) while leaving ``up``
++        # at the default init.  Two measured consequences:
++        #   * ``||X_final - X_t|| / ||X_t|| = 1.675e-05`` -- the branch is invisible at the
++        #     resolution of the angular recovery metric, so every downstream comparison reads
++        #     "no change" whether or not the branch works;
++        #   * optimising ``codetrack.*`` directly on a recovery-only loss converges to
++        #     ``d_after = 0.0111`` from gate -8.0 but ``0.00565`` from gate 0.0 -- the gate
++        #     halves the achievable recovery, it does not merely hide it.
++        # The two roles are now separated: ``up`` is initialised small-but-nonzero
++        # (``up_init_std``) so gradient flows, and the gate starts at a moderate value so the
++        # product is still near identity.  See ``residual_scale`` below.
+         self.up = nn.Linear(hidden, dim)
++        nn.init.normal_(self.up.weight, mean=0.0, std=float(up_init_std))
++        nn.init.zeros_(self.up.bias)
+         self.residual_gate = nn.Parameter(torch.full((1,), float(residual_gate_init)))
+ 
+         # NOTE: no ``template_proj`` here.  An earlier version built
+@@ -104,11 +112,24 @@ class H_RoutedSparseRefiner(nn.Module):
+         # ---- 2. motion prior enters as an attention bias ------------------------
+         attn_bias = None
+         if motion_map is not None:
+-            grid = int(round(math.sqrt(n)))
+             flat_map = motion_map.reshape(motion_map.shape[0], -1)    # (B, N)
+-            # log-space bias, scaled small so it nudges rather than dominates
+             nb_bias = flat_map[bidx[:, :, None], nb]                  # (B, K, K_n)
+-            attn_bias = torch.log(nb_bias.clamp(min=1e-4)) * float(self.motion_bias_scale)
++            log_b = torch.log(nb_bias.clamp(min=1e-4))
++            # REVISED 2026-10-04.  ``motion_map`` is normalised to unit mass, so its entries
++            # cluster at 1/256 = 3.9e-3 with a spread of only 2e-3.  ``log`` of that is a
++            # constant -1.55 plus +-0.5, and scaling it down gave a logit spread of ~0.05 nats
++            # over the 8 neighbours -- a softmax that is numerically uniform, which is why
++            # zeroing ``motion_map`` changed ``X_rec`` by only 7.4e-07 relative.
++            # Centring and standardising the log-bias makes ``motion_bias_scale`` a real
++            # "nats of spread" knob independent of the map's arbitrary offset, while preserving
++            # the prior's SHAPE (which cells are favoured).  Set
++            # ``motion_bias_normalise=False`` to reproduce the pre-2026-10-04 numerics exactly.
++            if self.motion_bias_normalise:
++                dims = tuple(range(1, log_b.dim()))
++                mu = log_b.mean(dim=dims, keepdim=True)
++                sd = log_b.std(dim=dims, keepdim=True, unbiased=False).clamp(min=1e-6)
++                log_b = (log_b - mu) / sd
++            attn_bias = log_b * float(self.motion_bias_scale)
+ 
+         # ---- 3. condition ------------------------------------------------
+         tpl = template_pool.unsqueeze(1).expand(-1, k, -1)            # (B, K, C)
+@@ -203,7 +224,7 @@ class NoiseModulatedDenoiser(nn.Module):
+                  steps: int = 2, num_checks: int = 64, cond_dim: int = 256,
+                  noise_schedule_power: float = 1.0, motion_dim: int = 2,
+                  memory_dim: int = 128, residual_gate_init: float = -8.0,
+-                 write_schedule: str = "ramp"):
++                 write_schedule: str = "ramp", up_init_std: float = 0.02):
+         super().__init__()
+         self.dim = dim
+         self.hidden = hidden
+@@ -238,9 +259,14 @@ class NoiseModulatedDenoiser(nn.Module):
+         nn.init.zeros_(self.film.weight)
+         nn.init.zeros_(self.film.bias)
+         self.step_embed = nn.Parameter(torch.zeros(self.steps, hidden))
+-        # see the refiner: a zero ``up`` would starve every conditioning path of gradient, so
+-        # identity comes from a small scalar gate (sigmoid(-8) ~ 3.4e-4) instead.
++        # REVISED 2026-10-04 -- same reasoning as the refiner above: a large negative gate on
++        # the *output* collapses the whole branch (and therefore the gradient to the syndrome,
++        # motion and memory conditioning paths) to ~3e-4 of nominal.  Instead, ``up`` starts
++        # small-but-nonzero and the gate starts moderate, so the step-0 product is still tiny
++        # while ``d(residual)/d(conditioning)`` stays usable.
+         self.up = nn.Linear(hidden, dim)
++        nn.init.normal_(self.up.weight, mean=0.0, std=float(up_init_std))
++        nn.init.zeros_(self.up.bias)
+         self.residual_gate = nn.Parameter(torch.full((1,), float(residual_gate_init)))
+ 
+         # No projector is applied to an already zero-initialised residual head: a dead
+diff --git a/config/GOLA/codetrack_s3/config.yaml b/config/GOLA/codetrack_s3/config.yaml
+index 93dc5e3..8c82b9d 100644
+--- a/config/GOLA/codetrack_s3/config.yaml
++++ b/config/GOLA/codetrack_s3/config.yaml
+@@ -151,6 +151,15 @@ run:
+           # S3 additionally unfreezes the LAST TWO DINOv2 blocks (their base weights only;
+           # their LoRA adapters were already in scope).  The first ten blocks stay frozen.
+           parameter_scope: ["lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack", "blocks.10.", "blocks.11."]
++          # ADDED 2026-10-04.  ``parameter_scope`` is applied as a substring filter over
++          # parameters that ALREADY have requires_grad=True, and the trunk blocks only get
++          # that flag from ``GOLA/builder._unfreeze_backbone_scope`` -- which reads
++          # ``codetrack.backbone_scope``.  The optimiser reads ``optimizer.backbone_scope``
++          # separately (apply.py:53).  With only the literal entries above, the last two
++          # DINOv2 blocks were filtered out before they could be unlocked, so this stage ran
++          # without training them and the ``^blocks\.1[01]\.`` rule matched nothing
++          # ("rule must be effective").  Declaring the scope here is what the optimiser reads.
++          backbone_scope: ["blocks.10.", "blocks.11."]
+           # ORDER AND STRUCTURE MATTER.
+           #
+           # ``zero_1d_param_weight_decay`` collects the parameters that must not be decayed
+diff --git a/config/GOLA/codetrack_s4/config.yaml b/config/GOLA/codetrack_s4/config.yaml
+index 871f65c..fd5bde6 100644
+--- a/config/GOLA/codetrack_s4/config.yaml
++++ b/config/GOLA/codetrack_s4/config.yaml
+@@ -152,6 +152,15 @@ run:
+           # to learn the temporal branch, so letting the foundation drift would confound the
+           # comparison.  (If S3 was rejected the numbers are simply absent from the checkpoint.)
+           parameter_scope: ["lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack", "blocks.10.", "blocks.11."]
++          # ADDED 2026-10-04.  ``parameter_scope`` is applied as a substring filter over
++          # parameters that ALREADY have requires_grad=True, and the trunk blocks only get
++          # that flag from ``GOLA/builder._unfreeze_backbone_scope`` -- which reads
++          # ``codetrack.backbone_scope``.  The optimiser reads ``optimizer.backbone_scope``
++          # separately (apply.py:53).  With only the literal entries above, the last two
++          # DINOv2 blocks were filtered out before they could be unlocked, so this stage ran
++          # without training them and the ``^blocks\.1[01]\.`` rule matched nothing
++          # ("rule must be effective").  Declaring the scope here is what the optimiser reads.
++          backbone_scope: ["blocks.10.", "blocks.11."]
+           # ORDER AND STRUCTURE MATTER.
+           #
+           # ``zero_1d_param_weight_decay`` collects the parameters that must not be decayed
+diff --git a/consts.yaml b/consts.yaml
+index 5de9fff..e0ab374 100644
+--- a/consts.yaml
++++ b/consts.yaml
+@@ -7,8 +7,8 @@ on_shared_file_system: false
+ 
+ # Dataset Paths
+ 
+-LasHeR_PATH: '/root/autodl-tmp/lab/projects/gola-CodeTrack/data/LasHeR_single/'
+-RGBT234_PATH: '/root/autodl-tmp/lab/dataset/RGBT234/'
++LasHeR_PATH: '/home/yangjuanfeng/lab/dataset/LasHeR/'
++RGBT234_PATH: '/home/yangjuanfeng/lab/dataset/RGBT234/'
+ RGBT210_PATH: ''
+ GTOT_PATH: ''
+ 
+diff --git a/repo/README.md b/repo/README.md
+deleted file mode 100644
+index a98bcb8..0000000
+--- a/repo/README.md
++++ /dev/null
+@@ -1,57 +0,0 @@
+-# 参考代码仓库
+-
+-CodeTrack 论文库（`docs/paper/`）对应的官方/原作者实现。**只读参考**：不修改、不直接复制进 `trackit/`。
+-
+-克隆方式：`git clone --depth 1 <url>`（浅克隆）。克隆时间 2026-10-04。
+-
+----
+-
+-## 论文 ↔ 仓库对照表
+-
+-| 目录 | 对应论文（`docs/paper/`） | 来源 | 说明 |
+-|---|---|---|---|
+-| `GOLA/` | `01_S_GOLA_..._AAAI2026.pdf` | <https://github.com/MelanTech/GOLA> | **主框架底座**。与 `third_party/GOLA` 同一 commit `339c737` |
+-| `MMLoRAT/` | 同上（GOLA 同作者的 RGB-X 扩展） | <https://github.com/MelanTech/MMLoRAT> | GOLA 作者后续工作，支持 LasHeR / online template / RGB-X 联合训练，**数据与评测问题可参考** |
+-| `Denoising-ViT/` | `02_S_DenoisingVisionTransformers_ECCV2024.pdf` | <https://github.com/Jiawei-Yang/Denoising-ViT> | 提供 DINOv2 feature denoising 实现，对应 Sparse Token Refiner 接口 |
+-| `DTPTrack/` | `03_S_DTPTrack_..._CVPR2026.pdf` | <https://github.com/NorahGreen/DTPTrack> | TRC / TGS（temporal reliability + guidance）。同为 TrackIt 体系，迁移成本低 |
+-| `TBSI/` | `04_S_TBSI_..._CVPR2023.pdf` | <https://github.com/RyanHTR/TBSI> | template-bridged search interaction |
+-| `LoRAT/` | `09_A_LoRAT_..._ECCV2024.pdf` | <https://github.com/LitingLin/LoRAT> | GOLA 的上游框架（`trackit` 即来自此处） |
+-| `BAT/` | `10_B_BAT_..._AAAI2024.pdf` | <https://github.com/SparkTempest/BAT> | 双向跨模态 adapter |
+-| `MaskGIT/` | `12_A_MaskGIT_..._CVPR2022.pdf` | <https://github.com/google-research/maskgit> | 官方 Jax 实现（仅算法参考） |
+-| `Consistency-Models/` | `13_B_ConsistencyModels_arXiv2303.01469.pdf` | <https://github.com/openai/consistency_models> | few-step 生成式恢复 |
+-| `FlexTrackV2/` | `07_A_FlexTrack_..._ICCV2025.pdf` | <https://github.com/supertyd/FlexTrackV2> | **FlexTrack v1 + v2 的实际代码都在这里**（v1 的 `supertyd/FlexTrack` 是占位仓库，已删）。提供 BMR（双向跨模态重建）+ CMA（完整性课程蒸馏）；对应 clean-teacher / 退化学生思路 |
+-| `RGBT-Tracking-List/` | —（论文汇总清单，非某篇论文代码） | <https://github.com/DRGBT-Tracking/RGBT_Tracking> | 查重与撞车检索用，已整理到 2026 年 |
+-
+----
+-
+-## 已删除：无核心代码的仓库
+-
+-以下仓库 clone 后核实**不含任何源代码**，已按"占位仓库即删除"的约定移除。仓库地址保留在此，供日后复查作者是否补放代码。
+-
+-| 原仓库 | 对应论文 | 实际内容 | 处理 |
+-|---|---|---|---|
+-| `supertyd/FlexTrack` | `07_A_FlexTrack_..._ICCV2025.pdf` | 仅 `README.md` + `LICENSE`，README 明确指向 `FlexTrackV2` 为主代码仓库 | 已删。v1/v2 代码均已在 `FlexTrackV2/` |
+-| `NorahGreen/RTracker` | `14_B_RTracker_..._CVPR2024.pdf` | 仅 `README.md` + `RTracker_PAPER.pdf`，**无代码**（官方至今未放出实现） | 已删。仓库自带的 18 页论文版已保留为 `docs/paper/14b_B_RTracker_full_arXiv2403.19242.pdf` |
+-
+-> 保留项：`RGBT-Tracking-List/` 源码文件数同样为 0，但它的内容**本身就是论文清单**（不是某篇论文的代码占位仓库），
+-> 故保留作为查重与撞车检索工具。
+-
+----
+-
+-## 无可用仓库的论文
+-
+-| 论文 | 状态 |
+-|---|---|
+-| `06_A_SCDT_..._CVPR2026.pdf` | **未开源**。已从 CVF 论文全文提取 URL，无任何 github 链接 |
+-| `MoKA-HP`（付费墙，未入库） | 未找到公开仓库 |
+-| `TPAMI` Template-Bridged（付费墙，未入库） | 未找到公开仓库 |
+-| `14_B_RTracker`（CVPR 2024） | 官方仓库无代码，见上表 |
+-
+----
+-
+-## 许可与使用约定
+-
+-- 代码复用须遵守各仓库自身 license；商用前逐仓库确认。
+-- `repo/` 与 `third_party/` 均为**只读参考**，不直接 import 进主工程。
+-- 不复制论文文字与图；方法、实验与论文表述须为本工作原创并正确引用原作者。
+-- 本目录与 `docs/paper/` 均不纳入版本库（见根目录 `.gitignore`）。
+diff --git a/scripts/00_env.sh b/scripts/00_env.sh
+index e69366c..c71a1c0 100755
+--- a/scripts/00_env.sh
++++ b/scripts/00_env.sh
+@@ -8,12 +8,12 @@
+ #   * torch.compile is not wanted for short runs    -> handled via mixin flag
+ export CUDA_DEVICE_ORDER=PCI_BUS_ID
+ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+-export LD_LIBRARY_PATH="/root/autodl-tmp/lab/tools:${LD_LIBRARY_PATH:-}"
++export LD_LIBRARY_PATH="${TURBOJPEG_DIR:-/home/yangjuanfeng/lab/tools}:${LD_LIBRARY_PATH:-}"
+ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
+ export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+ export NCCL_P2P_DISABLE=1
+ 
+-PYTHON="${PYTHON:-/root/autodl-tmp/lab/envs/gola/bin/python}"
++PYTHON="${PYTHON:-/home/yangjuanfeng/lab/envs/gola/bin/python}"
+ GOLA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ WEIGHT="${WEIGHT:-$GOLA_ROOT/weights/gola_b224.bin}"
+ export PYTHON GOLA_ROOT WEIGHT
+diff --git a/tools/causality_check.py b/tools/causality_check.py
+index 471c7e7..a4639e4 100644
+--- a/tools/causality_check.py
++++ b/tools/causality_check.py
+@@ -33,7 +33,8 @@ from safetensors.torch import load_file  # noqa: E402
+ from trackit.models.backbone.builder import build_backbone  # noqa: E402
+ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
+ 
+-WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
+ CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
+            num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
+            topk_tokens=32, num_neighbours=8, refiner_hidden=256, diffusion_steps=2,
+diff --git a/tools/codetrack_verify.py b/tools/codetrack_verify.py
+index 3575e14..120c3d9 100644
+--- a/tools/codetrack_verify.py
++++ b/tools/codetrack_verify.py
+@@ -28,7 +28,8 @@ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
+ 
+ from codetrack.config import CodeTrackConfig  # noqa: E402
+ 
+-DEFAULT_WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++DEFAULT_WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
+ DEFAULT_CONFIG: Dict = dict(
+     enabled=True, z_len=64, x_len=256, dim=768, grid=16,
+     mid_dim=128, num_checks=64, h_links_per_check=12, h_min_col_degree=3,
+diff --git a/tools/complementarity_check.py b/tools/complementarity_check.py
+index eaf5a00..157bcb6 100644
+--- a/tools/complementarity_check.py
++++ b/tools/complementarity_check.py
+@@ -32,7 +32,8 @@ from safetensors.torch import load_file  # noqa: E402
+ from trackit.models.backbone.builder import build_backbone  # noqa: E402
+ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
+ 
+-WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
+ CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
+            num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
+            h_free_edge_frac=0.25, syndrome_hidden=128,
+diff --git a/tools/dataflow_audit.py b/tools/dataflow_audit.py
+index 4c68c1c..e331d70 100644
+--- a/tools/dataflow_audit.py
++++ b/tools/dataflow_audit.py
+@@ -29,7 +29,8 @@ from trackit.models.backbone.builder import build_backbone  # noqa: E402
+ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
+ from codetrack.criteria import CodeTrackCriteria  # noqa: E402
+ 
+-WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
+ CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
+            num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
+            h_free_edge_frac=0.25, syndrome_hidden=128,
+diff --git a/tools/lora_grad_check.py b/tools/lora_grad_check.py
+index 3f1d9fd..83dfdd0 100644
+--- a/tools/lora_grad_check.py
++++ b/tools/lora_grad_check.py
+@@ -30,7 +30,8 @@ from trackit.models.backbone.builder import build_backbone  # noqa: E402
+ from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
+ from codetrack.criteria import CodeTrackCriteria  # noqa: E402
+ 
+-WEIGHT = "/root/autodl-tmp/lab/projects/gola-CodeTrack/weights/gola_b224.bin"
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++WEIGHT = os.path.join(_ROOT, "weights/gola_b224.bin")
+ CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
+            num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
+            topk_tokens=32, num_neighbours=8, refiner_hidden=256, diffusion_steps=2,
+diff --git a/tools/preflight_acceptance.py b/tools/preflight_acceptance.py
+index 5972e2f..1840515 100644
+--- a/tools/preflight_acceptance.py
++++ b/tools/preflight_acceptance.py
+@@ -90,7 +90,16 @@ def build_from_branch(branch_cfg: dict):
+     # ``enabled`` must be passed through: it is a bool field and the dataclass default is False,
+     # so stripping it silently constructs no CodeTrack branch at all (the previous revision of
+     # this helper did exactly that and every scope query returned "no parameters").
+-    return build(dict(branch_cfg))
++    branch = dict(branch_cfg)
++    m = build(branch)
++    # Mirror GOLA/builder.py:75.  ``GOLA_DINOv2.__init__`` freezes the whole trunk, so a stage
++    # that declares ``backbone_scope`` (S3: the last two DINOv2 blocks) is only distinguishable
++    # from S2 once the same unlock runs here.
++    scope = branch.get("backbone_scope") or []
++    if scope:
++        from trackit.models.methods.GOLA.builder import _unfreeze_backbone_scope
++        _unfreeze_backbone_scope(m, branch)
++    return m
+ 
+ def batch(b=2, seed=4):
+     g = torch.Generator(device="cuda").manual_seed(seed)
+@@ -541,6 +550,13 @@ def main() -> int:
+ 
+     def scope_union(cfg):
+         """(set of optimised names, {name: lr}) for a stage config, on a matching probe model."""
++        # The runner unlocks the trunk through ``codetrack.backbone_scope`` before the
++        # optimiser ever sees the parameters (GOLA/builder.py:75).  This probe must do the
++        # same, or a stage that is supposed to fine-tune the last DINOv2 blocks looks like it
++        # trains nothing -- which is what made this check report a defect that was real in the
++        # runner but invisible here, for the opposite reason.  ``build`` stores the branch
++        # config on the module, so the unlock is applied inside ``build_from_branch`` via the
++        # explicit flag below.
+         probe = build_from_branch(cfg["model"]["codetrack"])
+         probe.cuda().train()
+         probe_name_of = {id(p): n for n, p in probe.named_parameters()}
+@@ -548,9 +564,15 @@ def main() -> int:
+         o = cfg["run"]["runner"]["train"]["optimization"]["optimizer"]
+         sink = _io.StringIO()
+         with contextlib.redirect_stdout(sink):
++            # ``backbone_scope`` MUST be carried across: it is how the live optimiser learns
++            # that the trunk blocks are in scope (apply.py:53).  Omitting it here made the
++            # probe test a stricter fixture than the runner and produced a false FAIL -- the
++            # same class of error as the earlier "measured the replica instead of the real
++            # config" incident.
+             gs = parse_optimizer_per_params_config(probe, probe_crit, {
+                 "lr": o["lr"], "weight_decay": o["weight_decay"],
+                 "parameter_scope": o.get("parameter_scope"),
++                "backbone_scope": o.get("backbone_scope"),
+                 "per_parameter": o["per_parameter"]})
+         lrs = {}
+         for g in gs:

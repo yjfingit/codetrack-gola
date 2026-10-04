@@ -1,0 +1,37 @@
+{
+  "split": "train",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "attributes_covered": [
+    "NO",
+    "PO",
+    "TO",
+    "HO",
+    "MB",
+    "LI",
+    "HI",
+    "AIV",
+    "LR",
+    "DEF",
+    "BC",
+    "SA",
+    "CM",
+    "TC",
+    "FL",
+    "OV",
+    "FM",
+    "SV",
+    "ARV"
+  ],
+  "selection": "greedy uncovered challenge coverage, then total challenges, then train-list order"
+}

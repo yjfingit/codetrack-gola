@@ -123,7 +123,9 @@ class DatasetFactory:
 
 
 def _try_load_from_cache(seed, dataset_class, cache_extension, filters):
-    cache_folder_path, cache_file_name = prepare_dataset_cache_path(dataset_class.__name__, seed.name, seed.data_split, filters)
+    cache_folder_path, cache_file_name = prepare_dataset_cache_path(
+        dataset_class.__name__, seed.name, seed.data_split, filters,
+        cache_identity=seed.cache_identity)
     cache_file_path = os.path.join(cache_folder_path, cache_file_name + cache_extension)
     if os.path.exists(cache_file_path):
         try:

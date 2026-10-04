@@ -186,7 +186,9 @@ class SyndromeDiagnosis(nn.Module):
                  template_dim: Optional[int] = None,
                  support: Optional[torch.Tensor] = None,
                  detection_prior: float = 0.2,
-                 use_cos: bool = True):
+                 use_cos: bool = True,
+                 syndrome_logit_gain: float = 1.0,
+                 syndrome_gain_calibration: bool = True):
         super().__init__()
         self.dim = dim
         self.mid_dim = mid_dim
@@ -221,6 +223,27 @@ class SyndromeDiagnosis(nn.Module):
         self.residual_scale = nn.Parameter(torch.ones(1))
         self.check_scale = nn.Parameter(torch.ones(num_checks))
 
+        # ---- syndrome saturation guard (added 2026-10-04) ----------------------
+        # MEASURED DEFECT.  With the stock init, ``s_raw`` lands at ~0.2, so
+        # ``s = sigmoid(s_raw)`` sits at 0.794 +- 0.0097 over 64 checks.  The damage
+        # propagates through ``q_logits = H^T s + vote_bias``: the transmitted term has a
+        # spread of only 2e-3 over 256 tokens, so ``q`` is constant to 3e-4 and, measured on
+        # the same checkpoint,
+        #   * ``TopK(q)`` selects a set 4.1e-4 away from the population mean -> near-random;
+        #   * the denoiser noise gate spans max/min = 1.01x over 256 tokens (not selective);
+        #   * ``frame_reliability`` is one value per batch (std 3.3e-5).
+        # A point-mass head cannot be trained out of the point mass by the ordinary loss,
+        # because every token sees the same gradient.  The spread has to exist at
+        # initialisation.  This learnable scalar rescales the raw logit; its initial value is
+        # set by ``calibrate_syndrome_gain`` below from the measured logit std.
+        self.syndrome_logit_gain = nn.Parameter(
+            torch.full((1,), float(syndrome_logit_gain)))
+        # Scaling a nonzero mean alone saturates sigmoid.  Persist the calibrated centre
+        # as a parameter: GOLA checkpoints deliberately discard buffers.
+        self.syndrome_logit_offset = nn.Parameter(torch.zeros(1))
+        self.syndrome_gain_calibration = bool(syndrome_gain_calibration)
+        self._syndrome_gain_calibrated = float(syndrome_logit_gain) != 1.0
+
         # q = sigmoid(H^T s + b)
         self.vote_bias = nn.Parameter(torch.zeros(num_variables))
         # biased start at the expected corruption density (a 0 bias starts at 0.5,
@@ -228,6 +251,76 @@ class SyndromeDiagnosis(nn.Module):
         prior = min(max(float(detection_prior), 1e-3), 1 - 1e-3)
         with torch.no_grad():
             self.vote_bias.fill_(float(torch.logit(torch.tensor(prior))))
+
+    @torch.no_grad()
+    def syndrome_calibration_statistics(self, s_raw: torch.Tensor):
+        """Return (count, sum, sum_sq, min, max) of the PRE-sigmoid syndrome.
+
+        Collecting instead of applying keeps this point free of any collective
+        communication: the caller aggregates across ranks and then calls
+        ``apply_syndrome_calibration`` exactly once, OUTSIDE the model.  Doing the
+        all-reduce here, inside ``forward``, is unsafe -- the DDP reducer buckets
+        are already built by this point and an unmatched collective hangs the job.
+        """
+        # Accumulate in float64: the caller derives the variance from a single
+        # pass (E[x^2] - E[x]^2) and the syndrome is strongly biased (|mean|/std
+        # is ~11), so an fp32 reduction catastrophically cancels -- measured
+        # relative error on std was 1.3e-5, versus 1e-15 for float64.
+        raw32 = s_raw.detach().reshape(-1)
+        finite = torch.isfinite(raw32)
+        if not bool(finite.any()):
+            return 0, 0.0, 0.0, 0.0, 0.0
+        raw = raw32[finite].double()
+        return (int(raw.numel()), float(raw.sum()),
+                float((raw * raw).sum()), float(raw.min()), float(raw.max()))
+
+    @torch.no_grad()
+    def apply_syndrome_calibration(self, mean: float, std: float,
+                                   target_std: float = 1.0) -> float:
+        """Apply a CROSS-RANK calibrated gain/offset.
+
+        ``mean`` and ``std`` must already describe the *global* batch (see
+        ``codetrack/ddp_calibration.py``), not this rank's shard.
+        """
+        if not math.isfinite(target_std) or target_std <= 0:
+            raise ValueError("target_std must be finite and positive")
+        if not (math.isfinite(mean) and math.isfinite(std)) or std <= 1e-8:
+            return float(self.syndrome_logit_gain)
+        gain = float(min(max(target_std / std, 1.0), 1e3))
+        self.syndrome_logit_offset.fill_(mean)
+        self.syndrome_logit_gain.fill_(gain)
+        self._syndrome_gain_calibrated = True
+        return gain
+
+    @torch.no_grad()
+    def calibrate_syndrome_gain(self, s_raw: torch.Tensor, target_std: float = 1.0) -> float:
+        """Set ``syndrome_logit_gain`` so the *pre-sigmoid* syndrome spans ``target_std``.
+
+        Called on the first training batch, before applying gain/offset.  Centre the logits
+        as well: multiplying their mean by a large gain would saturate the sigmoid again.
+        Loaded calibrated checkpoints skip this initialisation.
+        """
+        if not math.isfinite(target_std) or target_std <= 0:
+            raise ValueError("target_std must be finite and positive")
+        raw = s_raw.detach().float()
+        cur = float(raw.std(unbiased=False))
+        if not bool(torch.isfinite(raw).all()) or cur <= 1e-8:
+            return float(self.syndrome_logit_gain)
+        gain = float(min(max(target_std / cur, 1.0), 1e3))
+        self.syndrome_logit_offset.copy_(raw.mean().reshape_as(self.syndrome_logit_offset))
+        self.syndrome_logit_gain.fill_(gain)
+        self._syndrome_gain_calibrated = True
+        return gain
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                     missing_keys, unexpected_keys, error_msgs)
+        # Legacy gain-only checkpoints still need centring.  A complete calibrated state
+        # must never be overwritten when entering the next stage or resuming training.
+        self._syndrome_gain_calibrated = (
+            prefix + "syndrome_logit_gain" in state_dict
+            and prefix + "syndrome_logit_offset" in state_dict)
 
     def forward(self, X_t: torch.Tensor, X_aux: torch.Tensor,
                 H_bar: torch.Tensor,
@@ -254,6 +347,16 @@ class SyndromeDiagnosis(nn.Module):
         # explicit magnitude term (a small difference is otherwise invisible to an MLP)
         s_raw = s_raw + self.residual_scale * delta.pow(2).mean(dim=-1).sqrt()
         s_raw = s_raw * self.check_scale
+        # See ``syndrome_logit_gain`` in ``__init__``: without this scale the 64 checks
+        # collapse to a point mass and every downstream consumer of ``q`` degenerates.
+        # Export the raw syndrome instead of calibrating in place.  The training loop
+        # all-reduces the statistics across ranks and then calls
+        # ``apply_syndrome_calibration`` once, outside the model.  Calibrating here
+        # would make each rank adopt a DIFFERENT gain/offset (its own shard's std),
+        # and the first DDP all-reduce would then mix four inconsistent parameter sets.
+        _pending_calibration = (self.training and self.syndrome_gain_calibration
+                                and not self._syndrome_gain_calibrated)
+        s_raw = (s_raw - self.syndrome_logit_offset) * self.syndrome_logit_gain
         s = torch.sigmoid(s_raw)                                # (B, M)
 
         q_logits = torch.einsum("mn,bm->bn", H_bar, s) + self.vote_bias
@@ -261,6 +364,8 @@ class SyndromeDiagnosis(nn.Module):
 
         out = {"q": q, "q_logits": q_logits, "s": s, "s_logits": s_raw,
                "C_obs": C_obs, "C_ref": C_ref, "U": U, "R": R}
+        if _pending_calibration:
+            out["syndrome_pending_calibration"] = s_raw.detach()
         if return_checks:
             out["H_bar"] = H_bar
         return out

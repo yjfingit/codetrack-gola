@@ -87,7 +87,9 @@ class CodeTrack(nn.Module):
         self.diagnosis = SyndromeDiagnosis(
             dim=cfg.dim, mid_dim=cfg.mid_dim, num_checks=cfg.num_checks,
             num_variables=cfg.x_len, syndrome_hidden=cfg.syndrome_hidden,
-            detection_prior=cfg.detection_prior, use_cos=cfg.syndrome_cos)
+            detection_prior=cfg.detection_prior, use_cos=cfg.syndrome_cos,
+            syndrome_logit_gain=cfg.syndrome_logit_gain,
+            syndrome_gain_calibration=cfg.syndrome_gain_calibration)
         # variable -> variable relation used for H-routing (from the same incidence)
         # ``persistent=False`` on purpose: upstream ``GOLA_DINOv2.state_dict`` walks every
         # key and calls ``get_parameter`` on it, which raises for a persistent buffer it does
@@ -115,7 +117,8 @@ class CodeTrack(nn.Module):
             dim=cfg.dim, hidden=cfg.refiner_hidden, heads=cfg.refiner_heads,
             num_neighbours=cfg.num_neighbours, memory_dim=cfg.memory_dim,
             dropout=cfg.refiner_dropout, residual_gate_init=cfg.residual_gate_init,
-            motion_bias_scale=cfg.motion_bias_scale)
+            motion_bias_scale=cfg.motion_bias_scale, up_init_std=cfg.up_init_std,
+            motion_bias_normalise=cfg.motion_bias_normalise)
 
         # condition for the denoiser = [H-routed context (bottleneck) | aux tokens],
         # then projected back to the token dim so it can also be scattered into token
@@ -126,7 +129,8 @@ class CodeTrack(nn.Module):
             steps=cfg.diffusion_steps, num_checks=cfg.num_checks, cond_dim=cfg.dim,
             noise_schedule_power=cfg.noise_schedule_power,
             write_schedule=getattr(cfg, "diffusion_write_schedule", "ramp"),
-            residual_gate_init=cfg.residual_gate_init) if cfg.diffusion_enabled else None
+            residual_gate_init=cfg.residual_gate_init,
+            up_init_std=cfg.up_init_std) if cfg.diffusion_enabled else None
         self.meanvar = MeanVarCompletion(dim=cfg.dim, hidden=cfg.diffusion_hidden)
 
         # ---- block 6: template protection -------------------------------------
@@ -144,8 +148,8 @@ class CodeTrack(nn.Module):
         # Previous frame's OWN decoded box/score.  At inference there is no ground truth,
         # so this is the only legitimate observation the Kalman filter can be given, and
         # using the previous frame (not the current prediction) keeps it causal.
-        self._prev_box: Optional[torch.Tensor] = None
         self._prev_admitted = False
+        self._gate_inputs = None
 
     # ------------------------------------------------------------------ helpers
     def reset_sequence(self) -> None:
@@ -156,17 +160,23 @@ class CodeTrack(nn.Module):
         self._last_decision = None
         # score of the *previous* accepted frame, used for the memory-admission rule below
         self._prev_score: Optional[torch.Tensor] = None
+        self._prev_box = None
         self._prev_admitted = False
+        self._gate_inputs = None
+        if self.memory is not None:
+            self.memory._admitted_once = False
 
     def _split(self, F_L: torch.Tensor) -> Dict[str, torch.Tensor]:
         z, x = self.z_len, self.x_len
+        if F_L.shape[1] != 4 * z + 2 * x:
+            raise ValueError(f"Expected {4 * z + 2 * x} fused tokens, got {F_L.shape[1]}")
         return {
             "Z_RGB": F_L[:, 0 * z: 1 * z],
             "X_RGB": F_L[:, 1 * z: 1 * z + x],
-            "Z_TIR": F_L[:, 2 * z: 2 * z + z],
-            "X_TIR": F_L[:, 2 * z + z: 2 * z + z + x],
-            "Z_on": F_L[:, 3 * z + x: 3 * z + x + z],
-            "D_TIR": F_L[:, 4 * z + x: 4 * z + x + z],
+            "Z_TIR": F_L[:, z + x: 2 * z + x],
+            "X_TIR": F_L[:, 2 * z + x: 2 * z + 2 * x],
+            "Z_on": F_L[:, 2 * z + 2 * x: 3 * z + 2 * x],
+            "D_TIR": F_L[:, 3 * z + 2 * x: 4 * z + 2 * x],
         }
 
     def _search_target_mask(self, gt_box_xywh: torch.Tensor, image_size: torch.Tensor,
@@ -223,6 +233,20 @@ class CodeTrack(nn.Module):
         self._prev_score = score.detach().reshape(score.shape[0])
         if box_xywh is not None:
             self._prev_box = box_xywh.detach().reshape(box_xywh.shape[0], 4)
+        # The current score is only available AFTER recovery and the tracking head.
+        # Refresh the evaluation decision now, using this frame's diagnostic evidence.
+        if not self.training and self.template_gate is not None and self._gate_inputs is not None:
+            with torch.no_grad():
+                decision = self.template_gate(score=self._prev_score, **self._gate_inputs)
+                self._last_decision = {
+                    "c_t": decision["c_t"], "score": self._prev_score,
+                    # The updater multiplies score by quality; a binary quality implements
+                    # the intended conjunction score > threshold AND c_t > tau exactly.
+                    "confidence": (decision["c_t"] > self.cfg.template_threshold).to(score.dtype),
+                    "update": TemplateProtectionGate.should_update(
+                        decision["c_t"], self._prev_score,
+                        self.cfg.gola_update_threshold, self.cfg.template_threshold),
+                }
 
     # ------------------------------------------------------------------ forward
     def forward(self, F_L: torch.Tensor,
@@ -310,7 +334,7 @@ class CodeTrack(nn.Module):
 
         # ---- block 4b: temporal memory ---------------------------------------
         # `reliability` = 1 - q: a token the diagnosis considers healthy is reliable.
-        reliability = (1.0 - q).detach()
+        reliability = 1.0 - q
         memory_readout = None
         prior_tokens = None
         if self.memory is not None:
@@ -322,15 +346,14 @@ class CodeTrack(nn.Module):
             target_mask = None
             if gt_box_xywh is not None and image_size is not None:
                 target_mask = self._search_target_mask(gt_box_xywh, image_size, b)
-            elif corruption_mask is not None:
-                # no box available: pool over the tokens the diagnosis considers healthy
-                target_mask = (~corruption_mask).to(X_t.dtype)
+            # Without an observed box, pool using predicted reliability inside memory.
+            # The injector's mask is a supervision label, never a recovery input.
             # Admission uses the *previous* frame's tracking score.  The head has not run
             # yet for this frame, so this is the causally correct signal -- and it matches the
             # evaluation pipeline, where the memory decision is taken after the previous frame
             # has been scored.  During training every frame is admitted, so the memory bank
             # sees the true temporal order instead of a partially frozen one.
-            admit = bool(self.training) or self._prev_score is not None
+            admit = bool(self.training) or self._prev_score is None
             mem = self.memory(X_t, reliability, mem_state.get("memory"),
                               mem_state.get("memory_rel"),
                               target_mask=target_mask, uncertainty=uncertainty,
@@ -380,13 +403,18 @@ class CodeTrack(nn.Module):
         # least).  Two names make that mistake impossible to repeat.
         token_error = q
         token_trust = (1.0 - q)
+        # Completion predicts clean moments and conditions recovery, as well as L_align.
+        # Previously this was a post-recovery auxiliary head with no output consumer.
+        mv = self.meanvar(X_rec)
         if self.denoiser is not None:
             # frame-level condition terms: syndrome s (M), motion (map mean + u_t),
             # temporal memory read-out (pooled to memory_dim)
             motion_cond = None
             if motion_map is not None:
-                # (B, 1): mean of the spatial prior map, plus the scalar uncertainty
-                mm = motion_map.reshape(b, -1).mean(dim=-1, keepdim=True)
+                # Mean of a unit-mass map is always 1/N.  Entropy instead communicates
+                # spatial concentration without changing the checkpoint's two-value width.
+                pm = motion_map.reshape(b, -1).clamp(min=1e-8)
+                mm = -(pm * pm.log()).sum(dim=-1, keepdim=True) / math.log(pm.shape[-1])
                 uu = (uncertainty.reshape(b, 1) if uncertainty is not None
                       else torch.zeros(b, 1, device=X_t.device, dtype=X_t.dtype))
                 motion_cond = torch.cat([mm, uu], dim=-1)             # (B, 2)
@@ -401,6 +429,7 @@ class CodeTrack(nn.Module):
             # the "noise-modulated" half of block 5b was silently inert.  Making the argument
             # explicit (and removing ``alpha``) means the failure cannot recur silently.
             den = self.denoiser(X_rec, condition, syndrome=out_s,
+                                completion=mv,
                                 motion=motion_cond, memory=mem_cond,
                                 token_error=token_error.unsqueeze(-1),
                                 token_trust=token_trust.unsqueeze(-1),
@@ -434,12 +463,12 @@ class CodeTrack(nn.Module):
             if keep is not None and bool(keep.any()):
                 preserve = (X_final[keep] - X_t[keep]).abs().mean()
 
-        mv = self.meanvar(X_final)
-
         # ---- block 6: template protection ------------------------------------
         gate_out: Dict[str, torch.Tensor] = {}
         if self.template_gate is not None:
             score = tracking_score
+            if score is None:
+                score = self._prev_score
             if score is None:
                 score = torch.zeros(b, device=X_t.device, dtype=X_t.dtype)
             # Fraction of tokens the diagnosis flags: a frame-level corruption summary that
@@ -449,9 +478,12 @@ class CodeTrack(nn.Module):
             recovery_conf = (1.0 - F.cosine_similarity(X_final, X_t, dim=-1, eps=1e-6)
                              ).mean(dim=-1)
             gate_out = self.template_gate(
-                score=score.detach(), q=corruption_fraction, uncertainty=uncertainty,
+                score=score.detach(), q=q, uncertainty=uncertainty,
                 recovery_confidence=recovery_conf, topk=self.cfg.topk_tokens)
             if update_state:
+                self._gate_inputs = dict(q=q.detach(),
+                    uncertainty=None if uncertainty is None else uncertainty.detach(),
+                    recovery_confidence=recovery_conf.detach(), topk=self.cfg.topk_tokens)
                 self._last_decision = {
                     "c_t": gate_out["c_t"].detach(),
                     "score": score.detach(),
@@ -462,7 +494,7 @@ class CodeTrack(nn.Module):
                     # most suspicious tokens): it is high exactly when the frame's evidence is
                     # intact, which is the same notion of trust as ``c_t`` but on the same
                     # 0..1 scale as a tracking score, and it is a real output of block 3.
-                    "confidence": gate_out["mean_topk_q"].detach(),
+                    "confidence": (gate_out["c_t"] > self.cfg.template_threshold).to(score.dtype).detach(),
                     "update": TemplateProtectionGate.should_update(
                         gate_out["c_t"], score,
                         self.cfg.gola_update_threshold, self.cfg.template_threshold).detach(),
