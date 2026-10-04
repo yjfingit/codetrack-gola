@@ -1,0 +1,29 @@
+# CodeTrack S1 Round-1 plan  (2026-10-04)
+#
+# One line per trial:  <trial_name>|<k=v,...>     (NO spaces around the '|')
+# All trials share the S1 base config (codetrack_s1, parameter_scope=["codetrack"]).
+#
+# COMMON (hard, from the user's order):
+#   effective batch = global_batch_size x grad_accumulation_steps = 128
+#   micro 16 x accum 8   (was micro 8 x accum 16)
+#   warmup_updates = 128,  sched_warmup_updates = 128
+#   max_updates = 2048,   t_initial_updates = 2048
+#   lambda_gain  = 0.4    (0.2 -> 0.4)
+#   lambda_align = 0.1    (0.2 -> 0.1)
+#   lambda_pres  = 0.02   (0.01 -> 0.02)
+#
+# DELTA per GPU:
+#   GPU0  baseline      lr=1e-4, lambda_gain=0.2 (pinned), diagnosis_alpha=0.5
+#   GPU1  lr            5e-5      gain=0.4  alpha=0.5
+#   GPU2  gain          0.4       lr=1e-4   alpha=0.5
+#   GPU3  alpha         0.7       lr=1e-4   gain=0.4
+#
+# NOTE on GPU0: the user's spec pins the baseline at gain=0.2, alpha=0.5.  The three global
+# loss changes are applied to the base for all arms; GPU0 then pins gain back to 0.2 so it
+# stays a TRUE baseline against the historical 0.2/0.2/0.01 S1 run.  To apply the global set
+# everywhere including GPU0, drop `lambda_gain=0.2,` from the gpu0 line.
+
+gpu0_baseline|lr=1e-4,lambda_gain=0.2,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=2048,t_initial_updates=2048,warmup_updates=128,sched_warmup_updates=128
+gpu1_lr5e5|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=2048,t_initial_updates=2048,warmup_updates=128,sched_warmup_updates=128
+gpu2_gain04|lr=1e-4,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=2048,t_initial_updates=2048,warmup_updates=128,sched_warmup_updates=128
+gpu3_alpha07|lr=1e-4,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.7,global_batch_size=16,grad_accumulation_steps=8,max_updates=2048,t_initial_updates=2048,warmup_updates=128,sched_warmup_updates=128
