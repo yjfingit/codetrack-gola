@@ -209,7 +209,22 @@ class GOLA_DINOv2(nn.Module):
         # In evaluation there is no corruption and no clean-teacher residual, so the trunk
         # is run once.  Only training needs the paired (clean, corrupted) forwards.
         needs_teacher = self.training or teacher or (x_cor is not x)
-        with torch.no_grad(), torch.autocast('cuda', enabled=False):
+
+        # ---- STUDENT branch: gradients MUST flow through the blocks ------------
+        # This used to be wrapped in ``torch.no_grad()`` together with the teacher, which
+        # silently made the LoRA adapters untrainable: their parameters never entered the
+        # autograd graph at all, so S2-style "joint PEFT" was a no-op.  Measured before the
+        # fix: 0 of 1296 LoRA tensors moved after 5 AdamW steps, while head and CodeTrack
+        # moved normally.
+        #
+        # The frozen DINOv2 base is excluded via ``requires_grad=False`` on its own
+        # parameters (set by the builder), *not* by a blanket ``no_grad`` -- the LoRA
+        # delta ``base(x) + lora_A(x) @ lora_B(x)`` is an addition, so leaving the graph
+        # enabled lets the delta receive gradients while the base stays constant.
+        #
+        # Still fp32: an overflowing fp16 activation becomes ``inf``, which the head then
+        # propagates into every adapter gradient.
+        with torch.autocast('cuda', enabled=False):
             z_v, z_i = self._z_feat(z.float(), z_feat_mask)
             d_v, d_i = self._d_feat(d.float(), d_feat_mask)
             x_v_c, x_i_c = self._x_feat(x_cor.float())       # CORRUPTED (== clean in eval)
@@ -217,14 +232,20 @@ class GOLA_DINOv2(nn.Module):
             for block in self.blocks:
                 cor_fused = block(cor_fused)
             cor_fused = self.norm(cor_fused)
-            if needs_teacher:
+
+        # ---- CLEAN TEACHER branch: no gradient ---------------------------------
+        # The teacher is only a *target* for the diagnosis residual; letting it receive the
+        # student's gradients would make the target move with the prediction.  Its features
+        # are detached below as a second line of defence.
+        if needs_teacher:
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
                 x_v, x_i = self._x_feat(x.float())           # CLEAN search
                 clean_fused = torch.cat((z_v, x_v, z_i, x_i, d_v, d_i), dim=1)
                 for block in self.blocks:
                     clean_fused = block(clean_fused)
                 clean_fused = self.norm(clean_fused)
-            else:
-                clean_fused = cor_fused
+        else:
+            clean_fused = cor_fused
 
         clean_tokens = self._codetrack_split(clean_fused)["X_TIR"]
         with torch.set_grad_enabled(bool(needs_teacher)), torch.autocast('cuda', enabled=False):

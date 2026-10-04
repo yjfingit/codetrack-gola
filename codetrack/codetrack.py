@@ -238,12 +238,16 @@ class CodeTrack(nn.Module):
 
         # ---- block 4: motion prior -------------------------------------------
         motion_out: Dict[str, torch.Tensor] = {}
+        pending_obs: Optional[torch.Tensor] = None
+        pending_conf: Optional[torch.Tensor] = None
         if self.motion is not None:
-            # The filter always advances (prediction step).  The observation is *admitted*
-            # only when an external trustworthy box is supplied: during training that is the
-            # ground truth, during tracking it is the head's own accepted output.  In
-            # evaluation we deliberately pass no box, so the prior stays prediction-only and
-            # cannot leak a ground-truth box into the head.
+            # ---- D2: predict-only, then observe AFTER this frame is consumed --------
+            # The order here is what makes the block causal.  ``observe()`` used to run
+            # *before* the prior map was built, so M_t was a function of the current frame's
+            # ground-truth box -- ground truth entering the current output instead of only the
+            # loss.  Now the filter predicts from x_{t|t-1} (strictly past information), the
+            # prior is built from that prediction, and the observation is absorbed at the end
+            # of the forward so the state is ready for frame t+1.
             admitted = None
             admitted_conf = box_confidence
             if observe_motion and gt_box_xywh is not None and image_size is not None:
@@ -251,18 +255,16 @@ class CodeTrack(nn.Module):
             elif box_confidence is not None and gt_box_xywh is not None:
                 admitted = gt_box_xywh
             elif eval_observe and self._prev_box is not None:
-                # Inference: feed the PREVIOUS frame's own prediction as the observation.
-                # Without this the filter is seeded once and never updated, so the motion prior
-                # is a frozen constant and contributes nothing (measured: motion_map identical
-                # on every frame).  The score becomes the observation confidence, which the
-                # prior already uses to inflate the measurement noise -- so a low-confidence
-                # frame moves the state only slightly.
+                # Inference: the previous frame's own prediction is the only legitimate
+                # observation available (there is no ground truth while tracking).
                 admitted = self._prev_box
                 admitted_conf = self._prev_score
+            pending_obs, pending_conf = admitted, admitted_conf
             motion_out = self.motion(
                 box_xywh=admitted, image_size=image_size,
                 confidence=admitted_conf, valid=None,
-                batch_size=b, device=X_t.device, dtype=X_t.dtype)
+                batch_size=b, device=X_t.device, dtype=X_t.dtype,
+                defer_observe=True)
         motion_map = motion_out.get("motion_map")
         uncertainty = motion_out.get("uncertainty")
 
@@ -285,7 +287,15 @@ class CodeTrack(nn.Module):
                 ctr = cxcy.unsqueeze(1).unsqueeze(1)
                 wh = whn.unsqueeze(1).unsqueeze(1)
                 dist = ((coords.unsqueeze(0) - ctr) / wh) ** 2
-                tgt = torch.exp(-0.5 * dist.sum(-1))
+                # Same functional family as the prediction (box-centred Gaussian), but the
+                # temperature comes from the *detached* mean of what the head predicted.  The
+                # target is supervision, so it must not carry gradient, and using the head's own
+                # mean temperature keeps the two maps comparable instead of forcing a fixed
+                # width the head is free to choose.
+                temp_t = motion_out.get("temperature")
+                temp_t = (temp_t.detach().mean().clamp(0.05, 20.0)
+                          if temp_t is not None else X_t.new_tensor(1.0))
+                tgt = torch.exp(-0.5 * dist.sum(-1) / temp_t)
                 tgt = tgt.reshape(b, -1)
                 motion_target = (tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
                                  ).reshape(b, 1, self.grid, self.grid)
@@ -428,6 +438,16 @@ class CodeTrack(nn.Module):
                         gate_out["c_t"], score,
                         self.cfg.gola_update_threshold, self.cfg.template_threshold).detach(),
                 }
+
+        # ---- D2: absorb this frame's observation LAST ---------------------------
+        # Everything above (the prior map, the recovery routing, the denoiser, the gate) has
+        # already consumed x_{t|t-1}.  Updating the filter now leaves the state at x_{t|t} so
+        # the *next* frame predicts from a posterior that includes this frame -- the correct
+        # causal ordering.  ``pending_conf`` is the observation confidence, which inflates the
+        # measurement noise, so a low-confidence box moves the state only slightly.
+        if self.motion is not None and pending_obs is not None and image_size is not None:
+            self.motion.observe(pending_obs, image_size,
+                                confidence=pending_conf, valid=None)
 
         return {
             "X_final": X_final,

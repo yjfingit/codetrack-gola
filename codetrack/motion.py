@@ -78,14 +78,22 @@ class KalmanMotionPrior(nn.Module):
         self.register_buffer("P0", init_P)
 
         # ---- the spatial prior head --------------------------------------------
-        # (x_{t|t-1} (8) | sqrt(diag P) (8) | u_t (1)) -> soft 16x16 prior map
+        # (x_{t|t-1} (8) | sqrt(diag P) (8) | u_t (1)) -> 5 geometric parameters
+        #
+        # The head predicts [dcx, dcy, dlog w, dlog h, log temperature] rather than a single
+        # multiplicative amplitude.  An amplitude is inert here: the map is normalised to unit
+        # mass by the consumer (``pm / pm.sum()``), so any global scale factor cancels exactly
+        # and the head would receive no useful spatial gradient.  Offsetting the centre and
+        # scaling the extents changes the *shape* of the prior, which is what actually
+        # survives normalisation and what a motion prior is supposed to express.
         self.prior = nn.Sequential(
             nn.Linear(8 + 8 + 1, gate_hidden), nn.GELU(),
             nn.Linear(gate_hidden, gate_hidden), nn.GELU(),
-            nn.Linear(gate_hidden, 1),
+            nn.Linear(gate_hidden, 5),
         )
-        # zero-init the last layer: at step 0 the prior is exactly zero, so the
-        # recovery branch is bit-identical to "no motion prior".
+        # zero-init the last layer: at step 0 the offsets are 0 and the temperature is
+        # exp(0)=1, so the prior is exactly the analytic box Gaussian and the recovery branch
+        # stays bit-identical to "no learned motion prior".
         nn.init.zeros_(self.prior[-1].weight)
         nn.init.zeros_(self.prior[-1].bias)
         self.uncertainty_gain = nn.Parameter(torch.ones(1))
@@ -240,18 +248,20 @@ class KalmanMotionPrior(nn.Module):
                 batch_size: Optional[int] = None,
                 device: Optional[torch.device] = None,
                 dtype: Optional[torch.dtype] = None,
+                defer_observe: bool = False,
                 ) -> Dict[str, torch.Tensor]:
-        """Predict the motion prior for the *current* frame, optionally after a new
-        observation.
+        """One frame of the filter.
 
-        Returns a dict with
+        ``defer_observe=True`` makes this a **prediction-only** step: ``box_xywh`` is ignored
+        and the state is left at ``x_{t|t-1}``.  The caller is then responsible for invoking
+        :meth:`observe` once it has finished consuming this frame's outputs.
 
-        ``motion_box``   (B, 4)  predicted box in the same (xywh, pixel) convention
-        ``uncertainty``  (B,)    scalar motion uncertainty u_t (larger = less certain)
-        ``prior_map``    (B, 16, 16)  soft spatial prior (zero at initialisation)
-        ``state``        (B, 8)  current normalised state (for logging / memory)
+        That split is what makes the module causal.  It used to absorb the current frame's
+        ground-truth box *before* building the prior map, so ``M_t`` was a function of the
+        very frame it was supposed to help predict -- ground truth leaking into the current
+        output rather than only into the loss.
         """
-        if box_xywh is not None:
+        if box_xywh is not None and not defer_observe:
             self.observe(box_xywh, image_size, confidence=confidence, valid=valid)
         if not self._initialised or self._x is None:
             # No observation has ever arrived.  This is the situation on **every inference
@@ -296,16 +306,23 @@ class KalmanMotionPrior(nn.Module):
         uncertainty = (gain * (trace.sqrt() + innov)).reshape(b).clamp(min=0.0)   # (B,)
 
         # ---- spatial prior -----------------------------------------------------
-        # prior head consumes [x_pred (8) | sqrt(diag P) (8) | u_t (1)]
+        # prior head consumes [x_pred (8) | sqrt(diag P) (8) | u_t (1)] and predicts geometric
+        # offsets: centre shift, log-scale factors, and a temperature.  Applying them before the
+        # Gaussian means the learned parameters shape the map rather than scaling it (a global
+        # scale is removed by the consumer's normalisation anyway).
         x_prior = torch.cat([x_pred, std, uncertainty.unsqueeze(-1)], dim=-1)   # (B, 17)
-        logits = self.prior(x_prior)                                   # (B, 1)
+        theta = self.prior(x_prior)                                    # (B, 5)
+        d_centre, d_logwh, log_temp = theta[:, :2], theta[:, 2:4], theta[:, 4:5]
+        mu = x_pred[:, :2] + d_centre                                  # (B, 2)
+        wh = x_pred[:, 2:4].clamp(min=1e-3) * torch.exp(d_logwh)       # (B, 2)
+        temp = torch.exp(log_temp).clamp(0.05, 20.0)                   # (B, 1)
         coords = self._grid_centres(device, dtype)                     # (16, 16, 2)
-        xy = x_pred[:, :2].unsqueeze(1).unsqueeze(1)                   # (B, 1, 1, 2)
-        wh = x_pred[:, 2:4].clamp(min=1e-3).unsqueeze(1).unsqueeze(1)
-        # inverse-box Gaussian: distance in units of the predicted box size
-        d = (coords.unsqueeze(0) - xy) / wh
+        xy = mu.unsqueeze(1).unsqueeze(1)                              # (B, 1, 1, 2)
+        wh_b = wh.unsqueeze(1).unsqueeze(1)
+        # inverse-box Gaussian: distance measured in units of the (modulated) box size
+        d = (coords.unsqueeze(0) - xy) / wh_b
         sq = (d ** 2).sum(-1)                                          # (B, 16, 16)
-        prior_map = torch.exp(-0.5 * sq) * torch.sigmoid(logits).unsqueeze(-1)
+        prior_map = torch.exp(-0.5 * sq / temp.unsqueeze(-1))
 
         # predicted box back to pixel xywh
         size = image_size if image_size is not None else torch.ones(b, 2, device=device, dtype=dtype)
@@ -326,6 +343,9 @@ class KalmanMotionPrior(nn.Module):
             "mahalanobis": mahal.reshape(b),                           # (B,)
             "state": x_pred,
             "cov_trace": trace,
+            # exposed so the supervision target can use the same functional family as the
+            # prediction instead of forcing a fixed Gaussian width on the head
+            "temperature": temp.reshape(b),
         }
 
     def _grid_centres(self, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

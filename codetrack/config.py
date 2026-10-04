@@ -109,12 +109,34 @@ class CodeTrackConfig:
     w_track_clean: float = 0.25
     lambda_diag: float = 0.5
     lambda_rec: float = 0.2
+    # L_gain supervises the *improvement* the recovery must produce, not its similarity to the
+    # teacher: ReLU(d_after - 0.8 * d_before).  Without it the recovery branch can be trained
+    # towards "output something plausible" instead of "output something better".
+    lambda_gain: float = 0.2
     lambda_align: float = 0.2
     lambda_pres: float = 0.01
     lambda_mem: float = 0.1
     # TRC reliability gate.  Without this the gate has zero gradient: nothing else in the
     # objective says what a frame's reliability should be (see codetrack/criteria.py).
     lambda_trc: float = 0.1
+    lambda_motion: float = 0.2
+
+    # ---- temporal training (stage 3+) ---------------------------------------
+    # Number of frames a clip spans when the causal-clip sampler is active.
+    clip_length: int = 8
+    # Truncated backprop-through-time window.  0 keeps the historical behaviour of detaching
+    # the memory bank every frame (no cross-frame credit assignment); >=1 lets gradients flow
+    # across that many frames before detaching.
+    memory_tbptt_steps: int = 0
+    # Scheduled sampling: probability of using the model's OWN previous prediction as the
+    # Kalman observation instead of the ground-truth box.  0 = pure teacher forcing (the old
+    # behaviour, which never exposes the filter to its own error); 1 = fully autoregressive.
+    scheduled_sampling_prob: float = 0.0
+    # Observation safety gate (4-d measurement).  ``mahalanobis`` is returned as sqrt(NIS), so
+    # the chi-square 0.999 quantile 16.27 corresponds to sqrt(16.27) ~ 4.03; 3.64 is the 0.998
+    # quantile and is the value recommended for tracker gating.
+    nis_threshold: float = 3.64
+    score_reject_threshold: float = 0.4
 
     # ---- training-time supervision ------------------------------------------
     corruption_enabled: bool = True
