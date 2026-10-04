@@ -1,9 +1,8 @@
 from typing import Dict, Optional, Tuple
-import warnings
 
 import torch.nn as nn
 
-from ._common import filter_out_params_by_rule_, get_common_per_parameter_optimizer_options
+from ._common import _Filter, get_common_per_parameter_optimizer_options
 
 
 def apply_zero_1d_param_weight_decay_rule_(rule: dict, base_lr: float,
@@ -33,37 +32,28 @@ def apply_zero_1d_param_weight_decay_rule_(rule: dict, base_lr: float,
     Upstream ``config/GOLA/run.yaml`` writes the rule with no filters at all, which still passes
     every parameter and therefore produces exactly the previous behaviour.
 
-    Only ``ndim < 2`` (and norm-layer) parameters can belong to this group, so a matching
-    *decay-eligible* parameter is deliberately left in the pool for a later rule rather than
-    being dropped from the optimizer: silently losing a tensor whose ``requires_grad`` is True is
-    exactly the class of failure this file has already been fixed for once.
+    A *decay-eligible* parameter is simply never considered here: the check comes first, so it
+    stays in the pool for a later rule.  Silently dropping a tensor whose ``requires_grad`` is
+    True is exactly the class of failure this file has already been fixed for once.
     """
-    # ``filter_out_params_by_rule_`` already *removed* the matches from the pool, so the
-    # selection must be taken from what it returned, not popped again from ``module_parameters``.
-    named_params = filter_out_params_by_rule_(rule, module_parameters)
-    one_dim_params, left_behind = [], []
-    for name, param in named_params.items():
+    # The filter is evaluated *before* anything is popped, so a decay-eligible parameter is never
+    # removed from the pool in the first place.  An earlier revision filtered via
+    # ``filter_out_params_by_rule_`` (which pops as it matches) and then had to push the
+    # non-decayed matches back -- and if the empty-set early return ran first, they were lost
+    # silently (measured: 1405 of 1406 tensors owned; ``codetrack.memory.base_prior`` was never
+    # updated).  Checking inside the loop removes that failure mode entirely, and keeps the code
+    # path for an *unfiltered* rule -- which is what upstream ``config/GOLA/run.yaml`` uses -- as
+    # close to the original implementation as possible.
+    parameter_filter = _Filter(rule)
+    one_dim_params = []
+    for name in list(module_parameters.keys()):
         if name in decay_parameter_names:
-            left_behind.append((name, param))
-        else:
-            one_dim_params.append(param)
-
-    # The restore MUST happen before the empty-set early return.  ``filter_out_params_by_rule_``
-    # already popped the matches out of the pool, so if this rule matched *only* decay-eligible
-    # parameters (e.g. CodeTrack's 3-D ``codetrack.memory.base_prior`` reaching the trailing
-    # catch-all rule) and the guard returned first, that parameter would be in no group at all:
-    # ``requires_grad`` is True but nothing ever updates it, and the parameter-count check in the
-    # preflight is the only thing that notices.  That was measured: 1405 of 1406 tensors owned.
-    if left_behind:
-        for name, param in left_behind:
-            module_parameters[name] = param
-        warnings.warn(
-            f"zero_1d_param_weight_decay rule matched {len(left_behind)} decay-eligible parameter(s) "
-            f"({[n for n, _ in left_behind][:3]}); they were returned to the pool. Add "
-            f"`ndim: [0, 1]` to the rule (or order the tensor rules first) to avoid the ambiguity.",
-            stacklevel=2)
-
-    if len(one_dim_params) == 0:
+            continue
+        param = module_parameters[name]
+        if not parameter_filter(name, param):
+            continue
+        one_dim_params.append(module_parameters.pop(name))
+    if not one_dim_params:
         return
 
     optimizer_options = get_common_per_parameter_optimizer_options(rule, base_lr, base_weight_decay)

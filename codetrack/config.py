@@ -15,7 +15,7 @@ Defaults are the numbers annotated on the architecture figure:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -168,6 +168,13 @@ class CodeTrackConfig:
     corruption_severity: float = 0.4
     diagnosis_alpha: float = 0.5          # e* = a*e_feat + (1-a)*e_task
     detection_prior: float = 0.2          # syndrome sigmoid bias init
+
+    # ---- stage-specific DINOv2 unfreezing (S3) ------------------------------
+    # Name prefixes of otherwise-frozen backbone parameters whose gradient is re-enabled.  Empty
+    # for every stage except S3, where it is ``["blocks.10.", "blocks.11."]`` (the last two
+    # DINOv2 transformer blocks).  Consumed by ``trackit.../GOLA/builder.py``; the optimizer
+    # picks the parameters up through ``optimizer.backbone_scope``.
+    backbone_scope: List[str] = field(default_factory=list)
 
     extra: Dict[str, Any] = field(default_factory=dict)
 

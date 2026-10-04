@@ -420,12 +420,17 @@ criterion 的诊断分支需要 `error_target` 与 `syndrome_target`，而**模�
 
 ```
 e_feat = 1 - cos(X_tir_corrupted, X_tir_clean)        # 表征侧偏差
-e_task = 0.5 * (e_feat + e_aux)                       # 跨模态一致性
-e*     = alpha*e_feat + (1-alpha)*e_task              # alpha=0.5
-s*     = H_bar @ e*                                   # syndrome 目标
+e_aux  = 1 - cos(X_rgb_corrupted, X_rgb_clean)        # 跨模态证据
+e*     = alpha*e_feat + (1-alpha)*e_aux               # alpha=0.5（第四轮修正，见 §16.4）
+s*     = H_bar @ e*                                   # 软 syndrome 目标
 ```
 
 实测：**`Loss/diag = 0.55`**，`error_target (B,256)`、`syndrome_target (B,64)`，此前完全不存在。
+
+**表述红线（第四轮审查提出，已采纳）**：`s* = H̄ e*` 只能称为
+**"LDPC-inspired continuous syndrome / check error density"**，**不能**写成严格纠错码的 syndrome。
+真正的二元 parity syndrome 不是简单的 `He`（它要作用在 GF(2) 上、且需要硬判决），
+而我们这里 `H̄` 是行归一化后的正实数矩阵、`e*` 是连续余弦偏差。
 
 ### P0-4｜Denoiser 写回方向反了（已修）
 
@@ -567,17 +572,24 @@ for module_parameter_name in list(module_parameters.keys()):
 
 **修法（三处）**：
 
-1. `zero_1d_param_weight_decay.py` 改为走 `filter_out_params_by_rule_` 尊重全部过滤器，
-   保留"1 维 + norm 层不做 weight decay"的上游语义。**不能**简单换成普通 `ndim: 1` 规则：
-   CodeTrack 里有 8 个 LayerNorm，`get_decay_parameter_names` 会把它们的权重也排除在衰减之外，
-   普通 `ndim` 规则做不到这一点。
+1. `zero_1d_param_weight_decay.py` **先在循环里判断过滤器再 pop**，尊重
+   `name_regex` / `ndim` / `name_prefix` / `name`，保留"1 维 + norm 层不做 weight decay"
+   的上游语义。**不能**简单换成普通 `ndim: 1` 规则：CodeTrack 里有 8 个 LayerNorm，
+   `get_decay_parameter_names` 会把它们的权重也排除在衰减之外，普通 `ndim` 规则做不到这一点。
 2. 规则表改为**显式维度划分**：张量规则 `ndim: 2`，`zero_1d` 规则 `ndim: [0, 1]`。
    配置文件里现在能一眼看出每条规则的适用范围。
-3. **修掉一个我自己引入的 in-degree bug**：`filter_out_params_by_rule_` 已经把匹配到的参数
-   *移出* pool，返回值才能用于分组；上一轮却再次 `module_parameters.pop(name)` → `KeyError`。
+3. **修掉两个我自己引入的 bug**（第五轮审查后重写为最终形态，见 §16.2 末尾）：
+   * 曾走 `filter_out_params_by_rule_`（它**边匹配边 pop**），再把非衰减匹配放回 pool；
+     而"空集早退"发生在放回之前 → `codetrack.memory.base_prior` 被静默丢弃
+     （实测覆盖率 `1405/1406`，`requires_grad=True` 却永不更新）。
+   * 更早一版还二次 `module_parameters.pop(name)` → `KeyError`。
 
-上游 `config/GOLA/run.yaml` 的 `zero_1d` 无任何过滤器 → `_Filter.name_filter is None` → 全通过，
-行为与修改前**逐位一致**，无回归。
+   最终形态把过滤器判断**放在 pop 之前**，这两个失效模式都从结构上消失了；也不再需要
+   `warnings` 提示。审查者指出原版路径应尽量少绕路，这一点已按它的建议落地。
+
+上游 `config/GOLA/run.yaml` 的 `zero_1d` 无任何过滤器 → `_Filter.name_filter is None` → 全通过。
+第五轮审查据此指出：应说 **"optimizer-semantically equivalent"**，而不是"逐位等价"——
+新实现不再经历 pop→restore，也不再发 warning，程序行为并非字节级一致。已按此措辞修正。
 
 **未预料到的连带缺陷**：CodeTrack 有唯一一个 3 维参数 `codetrack.memory.base_prior`。
 它被兜底 `zero_1d` 规则匹配到、判定为"可衰减"、放回 pool，但**空集早退发生在放回之前**，
@@ -651,8 +663,12 @@ gain_suspect,q_mean,q_auroc}`，训练日志按 `interval` 打印。
 | 4 | `[0.25, 0.5, 0.75, 1.0]` | `[0.0, 0.134, 0.5, 0.999]` |
 
 `linear_noise` 保留为可选项，因为消融需要"新旧写回计划对照"这一列；验收门同时断言
-ramp 每步非零、linear_noise 仍复现旧行为。恒等性不受影响（整个 `pred` 仍被
-`sigmoid(residual_gate)` 收缩，实测恒等性 `1.15e-4 < 1e-2`）。
+ramp 每步非零、linear_noise 仍复现旧行为。
+
+**表述修正（第四轮审查提出）**：ramp 计划下**整体是近似恒等，但第 0 步不再是"严格零写回"**。
+旧计划 `w_0 = 0` 使第 0 步的 `pred` 及其梯度被精确丢弃；ramp 让第 0 步也参与。
+step-0 的精确恒等由 `sigmoid(residual_gate) ≈ 3.4e-4` 承担，而不是由写回权重承担——
+实测恒等性 `1.15e-4 < 1e-2`，仍然满足"初始化不扰动预训练 head"这一硬约束。
 
 ### 15.7｜S1 的"恢复分支学得动吗"——实测，而不是推理
 
@@ -720,3 +736,160 @@ ramp 每步非零、linear_noise 仍复现旧行为。恒等性不受影响（�
 * `x_clean` 与写回计划这两项都进入了正式 S1 的变量集，S1 与 S2 之间不做进一步消融。
 * 训练速度实测 `time ≈ 0.33–1.6 s/micro-step`，`000` 级 epoch 预算下达数天/阶段；本轮只验证
   "能不能正确训练"，未做吞吐优化。
+
+---
+
+## 16. 第五轮：审查否掉"直接启动 S1"后修的三件事（2026-10-04）
+
+审查（针对 `d39552f`）给 **S1/S2 = NO-GO**，理由是三条具体的：denoiser 的噪声是死代码、
+仓库里没有真正的 S1 freeze/stage driver、判据（AUROC / gain）不可用。**三条我逐条在代码里
+核实，全部属实。** 另外审查纠正了我一个表述错误（"3200 步饱和"）。
+
+### 16.1｜denoiser 的噪声完全没作用（P0，死代码）
+
+```python
+# recovery.py（旧）
+if alpha is None:
+    alpha = torch.ones(b, n, 1, ...)      # alpha 恒为 1
+...
+eps = eps * (1.0 - alpha)                 # 1 - 1 = 0  →  噪声恒为 0
+```
+
+而调用方 `codetrack.py` **只传 `token_error` / `token_trust`，从不传 `alpha`**。
+所以：**写回门控是对的，但"noise-modulated"这一半完全失效**。这正是"loss 会降、
+checkpoint 正常、但论文声称的模块没工作"的典型形态——光看训练曲线发现不了。
+
+**修法**：删掉含义混乱的 `alpha`，噪声与写回各自用显式命名的门，并且调用方**显式**传：
+
+```python
+error_gate = token_error if token_error is not None else (1 - token_trust) ...
+noise_gate = error_gate if noise_gate is None else noise_gate
+write_gate = error_gate
+...
+eps = torch.randn_like(x) * sigma * noise_gate
+```
+
+无诊断输入时的兜底从"`alpha=1` → 不加噪"改成**显式 `ones`（全部可疑）**：
+旧兜底的语义与注释正好相反，这是它能藏住的原因。
+
+**实测**（`tools/preflight_acceptance.py` D 段新增门禁，8 次抽样取均值）：
+
+| | 坏 token 处 `x_in` std | 健康 token 处 | 比值 |
+|---|---:|---:|---:|
+| 修复后 | 0.14142 | 0.00144 | **98.2×** |
+| 修复前 | 0 | 0 | （噪声恒为 0） |
+
+### 16.2｜S1 只是文档，没有实现（P0）
+
+全仓库 grep 不到任何 S1 冻结逻辑；`codetrack_s2` 的 optimizer 仍然带
+`lora 2.5e-5` / `head 1e-5`。也就是说 **README 里让跑 S1 和 S2 用的是同一条命令**，
+实际执行的始终是 S2 式的 joint PEFT。文档里的"S1 warmup 128 updates"同样没有接线。
+
+**修法（三处，全部配置驱动）**：
+
+1. **`parameter_scope`**：optimizer 白名单从硬编码改为
+   `optimizer_config.get("parameter_scope") or <7 项缺省>`。
+   缺省逐字保留现状 → 上游 `config/GOLA/run.yaml` 零影响。
+   - `config/GOLA/codetrack_s1/`：`parameter_scope: ["codetrack"]` → **真正的 S1**
+   - `codetrack_s2` / `codetrack_full`：不写该键 → 框架缺省（joint PEFT）
+2. **`stage.max_updates`**：阶段长度按 **optimizer update** 定义。
+   runner 在 `optimizer_step >= max_updates` 时置停止标志，
+   `GlobalContextManager.should_stop()` 让 application 的 epoch 循环提前结束。
+   `num_epochs × samples_per_epoch` 降级为"上限"，不再是阶段长度的定义。
+3. **update 级 warmup 与 cosine 视野**：
+   `lr_scheduler.override.t_initial_updates` 与 `parameters.warmup_updates`。
+
+| 配置 | scope | max_updates | warmup | t_initial |
+|---|---|---:|---:|---:|
+| `codetrack_s1` | `["codetrack"]` | 1500 | 128 | 1500 |
+| `codetrack_s2` | 缺省 7 项 | 8000 | 410 | 8000 |
+| `codetrack_full` | 缺省 7 项 | 6000 | 256 | 6000 |
+| `codetrack_preflight` | `["codetrack"]` | 512 | 0 | 512 |
+
+**实测（`outputs/s0/run.log`，真实 LasHeR）**：启动日志
+`stage: S0-preflight: max_updates=512, warmup_updates=0, parameter_scope=['codetrack']`；
+optimizer 只打印 `codetrack.*`（73 行），**没有任何 `blocks.*` / `head.*` / `lora`**
+→ S1 冻结在真跑中生效。
+
+**一个差点又藏住的日志 bug**：`parameter_scope` 属于 `optimization.optimizer`，
+而启动打印最初从 `stage` 块里读，于是对一个 CodeTrack-only 阶段打印出
+`parameter_scope=<default>`——正好是"冻结没发生"的假象。已修正读取位置，并在
+`tools/preflight_acceptance.py` 里断言 S1 的 optimizer **只**含 `codetrack.*`（97/97、0 外来）。
+
+### 16.3｜判据原本不可用（P0，指标设计问题）
+
+**(a) `q_auroc` 的阈值卡在坏 token 均值之上。** 代码写死 `thr = 0.25`，而实测
+健康 token ≈ 0.14、坏 token ≈ 0.22 → 正类只剩坏 token 的极端尾部，
+所以 `0.37 → 0.71 → 0.40` 这种抖动**不能用来判断诊断头学没学会**。
+
+**修法**：主指标改为 **`Error/q_auroc_mask` = AUROC(q, corruption_mask)**。
+合成破坏阶段我们手里有**精确的逐 token 真值**，根本不需要阈值。
+对软目标的版本降级为次要指标 `Error/q_auroc_target` 并在注释里写明不得单独作为依据；
+另加 `Error/q_error_spearman`（q 与 `error_target` 的秩相关）。
+
+**(b) `L_gain` 对照的基准不对。** 旧式 `Relu(d_after − 0.8·d_before)` 里
+`d_before` 是 `X_rec` vs clean，所以它只证明**"denoiser 比 refiner 好"**，
+而不是**"整个 CodeTrack 比它的输入好"**。
+
+**修法**：暴露 `input_tokens`（student 的 `X_t`，代码里本来就有，零成本），
+补上第三个点，并让 `L_gain` 与主判据对齐：
+
+```
+d_input = 1 - cos(X_t,     X_clean)      ← 输入（新增，detach）
+d_before= 1 - cos(X_rec,   X_clean)
+d_after = 1 - cos(X_final, X_clean)
+L_gain  = Relu(d_after - 0.8 * d_input)          ← 基准改为 d_input
+Error/gain_total      = d_input - d_after        ← 论文主判据
+Error/gain_refiner    = d_input - d_before
+Error/gain_denoiser   = d_before - d_after
+```
+
+`d_input` **必须 detach**（审查特别肯定了这一点）：否则网络可以靠"故意把输入搞坏"降 loss。
+
+**(c) `tools/recovery_report.py` 名不副实。** 它用的是欧氏相对距离（与训练 criterion
+的 `1-cos` 不一致），而且**只是 forward report**——不训练，因此两条臂在初始化时必然
+完全一样，无法回答"哪条臂学得动"。已重写为**真正的短训对照**：固定 seed +
+**固定 batch 池**（消除数据噪声）、只训 `codetrack.*`、逐 update 打印
+`d_input / d_before / d_after / gain_total / q_auroc_mask / q_spearman / clean loss / gate`，
+并给出机读判定。GO 条件加了 `min_gain = 5e-3` 的噪声地板：
+初始化时 `gain_total` 是 fp32 舍入尘埃（~1e-7），不加地板会让"improving"在
+什么都没发生时也亮。入口：
+
+```bash
+"$PYTHON" main.py GOLA codetrack_s1 --mixin_config codetrack_gate_neg8   # 或 _neg5
+```
+
+`config/GOLA/_mixin/codetrack_gate_neg{8,5}.yaml` 只改
+`residual_gate_init`、`max_updates=600`、`t_initial_updates=600`、`warmup_updates=0`——
+**唯一自变量是 gate 初值**。
+
+### 16.4｜顺带修正的表述
+
+* **"3200 步饱和"是我的表述错误。** 3200 是 **micro-iteration**，只有约 **200 optimizer
+  update**；当时 200→300 update 仍在下降（loss 3.21→3.07、cls .729→.671、align .254→.189），
+  **当时完全不足以认定饱和**。
+* `s* = H̄e*` 改称 "LDPC-inspired continuous syndrome"（§15.3）。
+* ramp 写回计划改称"整体近似恒等，第 0 步不再是零写回"（§15.6）。
+
+### 16.5｜当前验收状态
+
+| 门 | 结果 |
+|---|---|
+| `tools/preflight_acceptance.py` | **86/86**（新增 11 项：stage 预算/视野/warmup 一致性、S1 scope、噪声非死码、`d_input` 三点、mask AUROC） |
+| `tools/causality_check.py` | **6/6** |
+| `tools/lora_grad_check.py` | LoRA 1296/1296、主干 0 漂移 |
+| `tools/codetrack_verify.py` | 恒等性 `1.154e-04`、checkpoint 1311/1311、10/10 模块梯度 |
+| S0 真跑（512 update 预算） | 见 §16.6 |
+
+### 16.6｜S0 真跑结论
+
+见下一次提交的 `outputs/s0/run.log`。关键读数（早期）：
+
+| 项 | 读数 |
+|---|---|
+| 启动日志 | `stage: S0-preflight: max_updates=512, warmup_updates=0, parameter_scope=['codetrack']` |
+| optimizer 覆盖面 | 仅 `codetrack.*`（73 行），无 `blocks.*` / `head.*` / `lora` |
+| `Loss/diag` | 0.43 → 0.26 |
+| `Error/q_auroc_mask` | **0.68**（对 mask 的无阈值 AUROC，初始化即远离 0.5） |
+| `Error/d_input` / `d_after` | 0.0428 / 0.0428（gate 近恒等，符合设计） |
+| `Error/gain_total` | ≈ 0（fp32 噪声级） |

@@ -27,6 +27,8 @@ never contains a recovery module, so no auxiliary loss can leak into it.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -147,47 +149,109 @@ def _motion_target_map(motion_map: torch.Tensor, targets: Dict[str, torch.Tensor
     return tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
 
 
-def _rank_auroc(scores: torch.Tensor, target: torch.Tensor,
-                thr: float = 0.25) -> Optional[float]:
-    """Rank-based AUROC of ``scores`` against a binarised ``target``, or ``None``.
-
-    The diagnosis claim ("the syndrome localises the damaged tokens") is a *ranking* claim, so
-    AUROC is the metric that can falsify it -- ``L_diag`` can fall while the ranking stays at
-    chance.  Computed as the Mann-Whitney statistic over the batch, using average ranks so ties
-    (very common here: the target is clamped at its bounds) do not bias the result.
-
-    ``thr`` is fixed rather than quantile-based so the number is comparable across batches and
-    can be averaged into an EMA.  It has to sit *inside* the measured target distribution:
-    observed per-token values are ~0.14 for untouched tokens and ~0.22 on damaged ones
-    (``tools/recovery_report.py``), so 0.15 gives a thin but usable split and 0.6 would binarise
-    the extreme tail only.  0.25 is used here and in the reporting tools so all three agree.
-
-    Returns ``None`` when the batch has no usable positive/negative split, e.g. an all-clean
-    draw, so the caller simply does not log the metric instead of logging a meaningless 0.5.
-    """
-    if scores.dim() == 3:
-        scores = scores.reshape(scores.shape[0], -1)
-    if target.dim() == 3:
-        target = target.reshape(target.shape[0], -1)
-    if scores.shape != target.shape or scores.numel() == 0:
-        return None
-    pos, neg = target > thr, target <= thr
-    n_pos, n_neg = int(pos.sum()), int(neg.sum())
-    if n_pos == 0 or n_neg == 0:
-        return None
-
-    flat = scores.reshape(-1)
+def _average_ranks(x: torch.Tensor) -> torch.Tensor:
+    """Average ranks of a flattened tensor, ties sharing the mean of their ranks."""
+    flat = x.reshape(-1)
     order = torch.argsort(flat)
     ranks = torch.empty_like(flat)
     ranks[order] = torch.arange(1, flat.numel() + 1, device=flat.device, dtype=flat.dtype)
-    # average ranks within each group of equal scores
     _, inverse, counts = torch.unique(flat, return_inverse=True, return_counts=True)
     sums = torch.zeros_like(counts, dtype=flat.dtype).scatter_add_(0, inverse, ranks)
-    ranks = (sums / counts.to(flat.dtype))[inverse]
+    return (sums / counts.to(flat.dtype))[inverse]
 
-    r_pos = float(ranks[pos.reshape(-1)].sum())
-    auroc = (r_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
-    return float(auroc)
+
+def _auroc_against_mask(scores: torch.Tensor, positive: torch.Tensor) -> Optional[float]:
+    """AUROC of ``scores`` ranked against an explicit boolean ground truth.
+
+    This is the *primary* diagnosis metric on synthetic-corruption batches: when the injector
+    applied a token-level corruption we hold an exact per-token label, so no threshold on
+    ``error_target`` is needed.  The previous metric binarised the soft target at a hard-coded
+    ``thr``; with measured values of ~0.14 (untouched) and ~0.22 (damaged), a threshold of 0.25
+    left only the extreme tail of damaged tokens as positives, so the reported AUROC was not
+    interpretable as "can the diagnosis find the damaged tokens".
+
+    Returns ``None`` when the batch contains only one class, so the caller logs nothing rather
+    than a meaningless 0.5.
+    """
+    if scores.dim() == 3:
+        scores = scores.reshape(scores.shape[0], -1)
+    if positive.dim() == 3:
+        positive = positive.reshape(positive.shape[0], -1)
+    if scores.shape != positive.shape or scores.numel() == 0:
+        return None
+    pos = positive.to(torch.bool).reshape(-1)
+    n_pos = int(pos.sum())
+    n_neg = int(pos.numel()) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = _average_ranks(scores.detach().float())
+    r_pos = float(ranks[pos].sum())
+    return float((r_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
+
+
+def _spearman(a: torch.Tensor, b: torch.Tensor) -> Optional[float]:
+    """Rank correlation between two same-shaped tensors (the soft diagnosis target check)."""
+    if a.shape != b.shape or a.numel() < 2:
+        return None
+    ra = _average_ranks(a.detach().float())
+    rb = _average_ranks(b.detach().float())
+    ra = ra - ra.mean()
+    rb = rb - rb.mean()
+    denom = float(ra.norm() * rb.norm())
+    if denom <= 0.0:
+        return None
+    return float((ra * rb).sum() / denom)
+
+
+def _auprc_against_mask(scores: torch.Tensor, positive: torch.Tensor) -> Optional[float]:
+    """Average precision (exact area under the precision-recall curve) for a boolean target.
+
+    AUPRC complements AUROC for this task.  Damage is *rare* per batch (the injector touches a
+    small token subset), and AUROC is optimistic under class imbalance while AUPRC is not -- so a
+    head that looks fine at AUROC 0.7 can still have poor precision at the operating point.
+    Reported alongside AUROC, never instead of it.
+
+    Computed exactly (all thresholds), not with an approximation: the batch has a few hundred
+    tokens, so the cost is irrelevant next to a forward pass.
+
+    ``None`` when only one class is present, matching ``_auroc_against_mask``.
+    """
+    if scores.dim() == 3:
+        scores = scores.reshape(scores.shape[0], -1)
+    if positive.dim() == 3:
+        positive = positive.reshape(positive.shape[0], -1)
+    if scores.shape != positive.shape or scores.numel() == 0:
+        return None
+    s = scores.detach().float().reshape(-1)
+    pos = positive.to(torch.bool).reshape(-1)
+    n_pos = int(pos.sum())
+    if n_pos == 0 or n_pos == pos.numel():
+        return None
+    # Computed on CPU on purpose: ``torch.cumsum`` has no deterministic CUDA implementation, and
+    # the training harness enables ``torch.use_deterministic_algorithms(True)`` -- a CUDA cumsum
+    # here aborts the run on the first diagnostics pass.  The tensor is a few hundred tokens, so
+    # the transfer is free next to a forward pass.
+    s_cpu = s.cpu().numpy()
+    pos_cpu = pos.cpu().numpy()
+    order = np.argsort(-s_cpu, kind="stable")
+    pos_sorted = pos_cpu[order].astype(np.float64)
+    tp = np.cumsum(pos_sorted)
+    precision = tp / np.arange(1, pos_sorted.size + 1, dtype=np.float64)
+    # Average precision = sum over positives of the precision at that recall step.
+    return float((precision * pos_sorted).sum() / float(n_pos))
+
+
+def _rank_auroc(scores: torch.Tensor, target: torch.Tensor,
+                thr: float = 0.25) -> Optional[float]:
+    """AUROC of soft ``scores`` against a *thresholded* soft ``target``.
+
+    Kept only as a secondary diagnostic.  It is threshold-dependent by construction (see
+    ``_auroc_against_mask`` for why that made the previous headline number uninterpretable), so
+    it must never be the sole basis for a go/no-go decision on the diagnosis head.
+    """
+    if target.dim() == 3:
+        target = target.reshape(target.shape[0], -1)
+    return _auroc_against_mask(scores, target > thr)
 
 
 class CodeTrackCriteria(nn.Module):
@@ -280,9 +344,34 @@ class CodeTrackCriteria(nn.Module):
             # Reporting only: is the head's ranking of "which token is damaged" better than
             # chance?  L_diag itself can fall while the ranking stays useless (it is a
             # per-token calibration loss), and this is the number that tells the two apart.
-            auroc = _rank_auroc(q.detach().float(), err.detach().float(), thr=0.25)
-            if auroc is not None:
-                metrics["Error/q_auroc"] = auroc
+            #
+            # PRIMARY metric: rank q against the injector's exact token label.  No threshold is
+            # involved, so it is a direct answer to "can the diagnosis find the damaged tokens".
+            cor_mask_diag = extras.get("corruption_mask")
+            if cor_mask_diag is not None:
+                auroc_mask = _auroc_against_mask(q.detach(), cor_mask_diag)
+                if auroc_mask is not None:
+                    metrics["Error/q_auroc_mask"] = auroc_mask
+                auprc_mask = _auprc_against_mask(q.detach(), cor_mask_diag)
+                if auprc_mask is not None:
+                    metrics["Error/q_auprc_mask"] = auprc_mask
+                # q must not collapse to a constant: a degenerate head can still score AUROC 0.5
+                # while carrying no information at all, and the separation between the damaged
+                # and untouched token populations is what says otherwise.
+                qd = q.detach().float().reshape(-1)
+                posd = cor_mask_diag.to(torch.bool).reshape(-1)
+                metrics["Error/q_std"] = float(qd.std().detach())
+                if bool(posd.any()) and bool((~posd).any()):
+                    metrics["Error/q_pos_mean"] = float(qd[posd].mean().detach())
+                    metrics["Error/q_neg_mean"] = float(qd[~posd].mean().detach())
+            # SECONDARY metric: the same ranking against the *soft* target.  Threshold-dependent
+            # by construction (see ``_auroc_against_mask``); never use it alone for a decision.
+            auroc_soft = _rank_auroc(q.detach().float(), err.detach().float(), thr=0.25)
+            if auroc_soft is not None:
+                metrics["Error/q_auroc_target"] = auroc_soft
+            spearman = _spearman(q.detach(), err.detach())
+            if spearman is not None:
+                metrics["Error/q_error_spearman"] = spearman
             metrics["Error/q_mean"] = float(q.detach().mean())
 
         # ---- recovery -------------------------------------------------------
@@ -329,25 +418,53 @@ class CodeTrackCriteria(nn.Module):
         # simply does not exist -- mixing ~86% untouched samples into the average would hide the
         # very signal it exists to expose.
         x_rec = extras.get("recovered_pre_denoise")
+        x_in = extras.get("input_tokens")
         cor_mask = extras.get("corruption_mask")
-        if x_rec is not None and clean_tok is not None and cor_mask is not None \
-                and bool(cor_mask.any()):
+        if x_rec is not None and x_in is not None and clean_tok is not None \
+                and cor_mask is not None and bool(cor_mask.any()):
             cor = cor_mask.to(torch.bool)
-            # ``X_rec`` (post-refiner) and ``X_final`` (post-denoiser) are both measured against
-            # the same clean reference, so the two distances are comparable sample by sample.
-            # ``_relative_error`` returns per-token angular distances (see its docstring).
-            d_before_map = self._relative_error(x_rec.detach(), clean_tok)
+            # Three points on the same path, all measured against the same clean reference with
+            # the same angular metric (see ``_relative_error``), so they are directly comparable:
+            #   d_input : X_t               -- what CodeTrack was handed
+            #   d_before: X_rec (refiner)   -- after evidence routing
+            #   d_after : X_final (denoiser)-- after the correction block
+            # ``d_input`` is the denominator the paper-level claim needs: "the recovery improves
+            # on its input", not merely "the denoiser improves on the refiner".
+            d_input_map = self._relative_error(x_in.detach(), clean_tok)
+            # NOTE the detach asymmetry.  ``d_input`` is the *baseline* and must be detached, or
+            # the model could lower the gain by making its own input worse.  ``d_before`` and
+            # ``d_after`` are the branch's own outputs and must keep their graph, otherwise
+            # ``L_gain`` would carry no gradient into the refiner/denoiser at all and the term
+            # would be decorative.
+            d_before_map = self._relative_error(x_rec, clean_tok)
             d_after_map = self._relative_error(rec, clean_tok)
+            d_input = d_input_map[cor].mean()
             d_before = d_before_map[cor].mean()
             d_after = d_after_map[cor].mean()
-            l_gain = F.relu(d_after - self.gain_margin * d_before)
+            # Two gain terms, because the two sub-stages have separate jobs:
+            #   * the refiner must move the tokens it selected towards clean  -> ``d_before``
+            #   * the denoiser must not undo that                               -> ``d_after``
+            # Supervising only ``d_after`` was measured to be useless: the refiner never moved a
+            # token (``d_before == d_input`` to 5 decimals for 600 updates) while the denoiser,
+            # which has no anchor to the input, made things worse.  Both ``d_input`` and
+            # ``d_before`` are detached -- otherwise the model could lower this loss by making its
+            # own input worse instead of making the output better.
+            l_gain_refiner = F.relu(d_before - self.gain_margin * d_input)
+            l_gain_final = F.relu(d_after - self.gain_margin * d_input)
+            l_gain = l_gain_refiner + l_gain_final
             if self.lambda_gain > 0:
                 total = total + self.lambda_gain * l_gain
             metrics["Loss/gain"] = float(l_gain.detach())
+            metrics["Loss/gain_refiner"] = float(l_gain_refiner.detach())
+            metrics["Loss/gain_final"] = float(l_gain_final.detach())
             # reporting only -- these are the preflight acceptance numbers
+            metrics["Error/d_input"] = float(d_input.detach())
             metrics["Error/d_before"] = float(d_before.detach())
             metrics["Error/d_after"] = float(d_after.detach())
-            metrics["Error/gain"] = float((d_before - d_after).detach())
+            # The paper-level criterion, and the two sub-stages that compose it.
+            metrics["Error/gain_total"] = float((d_input - d_after).detach())
+            metrics["Error/gain_refiner"] = float((d_input - d_before).detach())
+            metrics["Error/gain_denoiser"] = float((d_before - d_after).detach())
             metrics["Error/corrupted_fraction"] = float(cor.to(torch.float32).mean())
             # The task-relevant form of the same question: does the branch shrink the error at
             # all?  Reported for the tokens that were damaged AND flagged as suspect.
@@ -358,11 +475,11 @@ class CodeTrackCriteria(nn.Module):
                 sel[bidx, suspect] = True
                 sel = sel & cor
                 if bool(sel.any()):
-                    db_s = d_before_map[sel].mean()
-                    da_s = d_after_map[sel].mean()
-                    metrics["Error/d_before_suspect"] = float(db_s.detach())
-                    metrics["Error/d_after_suspect"] = float(da_s.detach())
-                    metrics["Error/gain_suspect"] = float((db_s - da_s).detach())
+                    metrics["Error/d_input_suspect"] = float(d_input_map[sel].mean().detach())
+                    metrics["Error/d_before_suspect"] = float(d_before_map[sel].mean().detach())
+                    metrics["Error/d_after_suspect"] = float(d_after_map[sel].mean().detach())
+                    metrics["Error/gain_suspect"] = float(
+                        (d_input_map[sel] - d_after_map[sel]).mean().detach())
 
         # ---- alignment (mean / var completion) ------------------------------
         mv = extras.get("meanvar")

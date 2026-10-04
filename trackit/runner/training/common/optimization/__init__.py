@@ -20,3 +20,6 @@ class OptimizationModulesAndOptions:
     autograd_detect_anomaly_fn: Callable
     grad_accumulation_steps: int
     zero_grad_set_to_none: bool
+    # Optional optimizer-update budget for a staged recipe (``None`` = run for ``num_epochs``).
+    # Appended with a default so every existing positional constructor call keeps working.
+    max_updates: Optional[int] = None

@@ -189,9 +189,9 @@ class NoiseModulatedDenoiser(nn.Module):
 
         X^(0) = X_corr
         for t = 0 .. T-1:
-            eps_t   = alpha_bar_t * eps            (weak/strong noise modulation)
+            eps_t   = noise_gate * eps              (weak/strong noise modulation)
             X_pred  = f_theta( X^t + eps_t, t, C )  (short-term cross-attention + FiLM)
-            X^(t+1) = alpha_t * X_pred + (1 - alpha_t) * X_corr     (residual, never a rewrite)
+            X^(t+1) = X^t + w_t * q * X_pred        (selective, gated residual)
 
     ``C`` is the condition set: syndrome ``s``, the H-routed context, the motion map and
     the temporal read-out.  Long-term (whole-frame) statistics enter through FiLM, i.e.
@@ -253,9 +253,9 @@ class NoiseModulatedDenoiser(nn.Module):
                 syndrome: Optional[torch.Tensor] = None,
                 motion: Optional[torch.Tensor] = None,
                 memory: Optional[torch.Tensor] = None,
-                alpha: Optional[torch.Tensor] = None,
                 token_error: Optional[torch.Tensor] = None,
                 token_trust: Optional[torch.Tensor] = None,
+                noise_gate: Optional[torch.Tensor] = None,
                 train_noise: bool = True, noise_weak: float = 0.05,
                 noise_strong: float = 0.20, strong_prob: float = 0.5
                 ) -> Dict[str, torch.Tensor]:
@@ -263,6 +263,17 @@ class NoiseModulatedDenoiser(nn.Module):
         ``syndrome``: (B, M); ``motion``: (B, motion_dim); ``memory``: (B, memory_dim).
 
         Returns ``X_denoised`` (B, N, C) and the per-step predictions.
+
+        Both the noise injection and the write-back are gated by the *same* quantity: the
+        per-token error probability ``q`` (block 3).  They are two separate arguments only so
+        that the two roles stay independently readable; if the caller does not pass
+        ``noise_gate`` it defaults to the error gate.
+
+        This method used to take an ``alpha`` argument that the caller never supplied, so it
+        fell back to ``ones`` and the noise was multiplied by ``1 - alpha == 0``.  The
+        SCDT-style "noise-modulated" half of this module was therefore **dead code**: the
+        write-back was gated correctly but no token ever received noise.  There is deliberately
+        no ``alpha`` parameter any more -- one name for one concept.
         """
         b, n, c = tokens.shape
         heads = self.heads
@@ -270,17 +281,20 @@ class NoiseModulatedDenoiser(nn.Module):
         x = tokens
         preds = []
 
-        if alpha is None:
-            alpha = torch.ones(b, n, 1, device=tokens.device, dtype=tokens.dtype)
-
-        # ``alpha`` historically meant "trust".  The write-back must be gated by the *error*
-        # probability, so derive it explicitly and let the caller pass either convention.
+        # Single source of truth for "how damaged is this token": q.
         if token_error is not None:
-            write_gate = token_error
+            error_gate = token_error
         elif token_trust is not None:
-            write_gate = 1.0 - token_trust
+            error_gate = 1.0 - token_trust
         else:
-            write_gate = 1.0 - alpha
+            # Explicit, documented fallback: with no diagnosis available every token is
+            # treated as suspect, i.e. noise acts everywhere and the write-back is ungated.
+            # The previous fallback silently produced the *opposite* (no noise anywhere),
+            # which is how the dead-noise bug stayed invisible.
+            error_gate = tokens.new_ones(b, n, 1)
+        if noise_gate is None:
+            noise_gate = error_gate
+        write_gate = error_gate
 
         # broadcast the frame-level condition terms onto every token
         if syndrome is None:
@@ -306,8 +320,9 @@ class NoiseModulatedDenoiser(nn.Module):
                                     torch.full_like(x[:, :1, :1], noise_strong),
                                     torch.full_like(x[:, :1, :1], noise_weak))
                 eps = torch.randn_like(x) * sigma
-                # only corrupted (low-alpha) tokens receive noise
-                eps = eps * (1.0 - alpha)      # (1 - trust) == error
+                # Only the tokens the diagnosis flags as damaged receive noise.  Gated by the
+                # error probability itself (not ``1 - alpha``, which was always 0 here).
+                eps = eps * noise_gate
                 x_in = (ab.sqrt() * x + (1.0 - ab).clamp(min=0).sqrt() * eps)
             else:
                 x_in = x
@@ -337,12 +352,12 @@ class NoiseModulatedDenoiser(nn.Module):
             preds.append(pred)
 
             # ---- residual composition: never a wholesale rewrite ---------------
-            # ``write_gate`` is the per-token *error* probability q.  It used to be applied to
-            # the noise only (``eps * (1-alpha)``) while the write-back used a purely global
-            # scalar ``w``, which meant noise was injected only into tokens judged corrupt but
-            # the correction was then applied to all 256 tokens alike -- undoing the
-            # architecture's own "selective recovery" and giving healthy tokens a second,
-            # ungated modification on top of the refiner's identity bypass.
+            # ``noise_gate`` and ``write_gate`` are both the per-token *error* probability q.
+            # A previous revision applied the gate to the noise only (``eps * (1-alpha)``) while
+            # the write-back used a purely global scalar ``w``, which meant the correction went
+            # to all 256 tokens alike -- undoing the architecture's own "selective recovery".
+            # Worse, the caller never passed ``alpha``, so ``1 - alpha`` was 0 and the noise
+            # side was not merely asymmetric but completely inert.
             w = self.write_weight[t].to(tokens.dtype)
             # Selective recovery: a token is corrected in proportion to how DAMAGED it is,
             # not how healthy.  Writing back ``w * trust * pred`` (the previous form) let

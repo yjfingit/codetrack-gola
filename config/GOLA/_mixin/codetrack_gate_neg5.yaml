@@ -1,0 +1,16 @@
+# Residual-gate ablation arm: residual_gate_init = -5.0.
+#
+# Used with the S1 stage config, which already restricts the optimizer to CodeTrack:
+#
+#   "$PYTHON" main.py GOLA codetrack_s1 --mixin_config codetrack_gate_neg5 ...
+#
+# It shortens the stage to 600 optimizer updates so that both arms fit in the same session and
+# can be compared at the same budget.  residual_gate_init is the only variable.
+- path: "model.codetrack.residual_gate_init"
+  value: -5.0
+- path: "run.runner.train.stage.max_updates"
+  value: 600
+- path: "run.runner.train.optimization.lr_scheduler.override.t_initial_updates"
+  value: 600
+- path: "run.runner.train.optimization.lr_scheduler.parameters.warmup_updates"
+  value: 0

@@ -124,7 +124,8 @@ def main():
     wrap(ct.motion, "KalmanMotionPrior", ["box_xywh", "image_size"])
     wrap(ct.memory, "TemporalMemory", ["tokens", "reliability"])
     wrap(ct.refiner, "H_RoutedSparseRefiner", ["X_t", "X_aux", "q", "neighbour_index"])
-    wrap(ct.denoiser, "NoiseModulatedDenoiser", ["tokens", "condition", "syndrome"])
+    wrap(ct.denoiser, "NoiseModulatedDenoiser", ["tokens", "condition", "syndrome", "token_error",
+                                                 "noise_gate"])
     wrap(ct.meanvar, "MeanVarCompletion", ["tokens"])
     wrap(ct.template_gate, "TemplateProtectionGate", ["score", "q"])
 

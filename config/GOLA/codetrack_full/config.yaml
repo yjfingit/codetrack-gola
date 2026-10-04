@@ -127,6 +127,13 @@ run:
   runner:
     train:
       type: "default_train"
+      # Stage identity: length is defined in OPTIMIZER UPDATES, not epochs.  The stage
+      # ends when ``max_updates`` optimizer steps have been taken, and the cosine
+      # horizon below is set to the same number.
+      stage:
+        name: "S3"
+        max_updates: 6000
+        warmup_updates: 256
       optimization:
         optimizer:
           type: "AdamW"
@@ -194,9 +201,16 @@ run:
           type: "timm"
           sched: "cosine"
           per_iteration: true
+          override:
+            # The cosine horizon is in OPTIMIZER UPDATES so that it matches
+            # ``stage.max_updates`` exactly; deriving it from epochs would make the stage
+            # length an approximation of num_epochs x samples_per_epoch.
+            num_epochs: 10
+            t_initial_updates: 6000
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
+            warmup_updates: 256
             # 0, not the upstream 2.  A 2-epoch warmup belongs to a single-stage 10-epoch run;
             # this config is the reference for the STAGED recipe, where S1 is ~1.5 epochs of
             # updates and would never leave warmup.  Stages set their own warmup by update count
@@ -215,6 +229,7 @@ run:
         w_track_clean: 0.25
         lambda_diag: 0.5
         lambda_rec: 0.2
+        lambda_gain: 0.2
         lambda_align: 0.2
         lambda_pres: 0.01
         lambda_mem: 0.1

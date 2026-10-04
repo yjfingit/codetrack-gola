@@ -21,6 +21,7 @@ import re
 import sys
 
 import torch
+import torch.nn.functional as F
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,18 +30,23 @@ from safetensors.torch import load_file  # noqa: E402
 from trackit.core.boot.funcs.utils.custom_yaml_loader import CustomLoader  # noqa: E402
 from trackit.models.backbone.builder import build_backbone  # noqa: E402
 from trackit.models.methods.GOLA.gola import GOLA_DINOv2  # noqa: E402
-from codetrack.criteria import CodeTrackCriteria, _rank_auroc  # noqa: E402
+from codetrack.criteria import (  # noqa: E402
+    CodeTrackCriteria, _auroc_against_mask, _rank_auroc)
 from trackit.runner.training.common.optimization.optimizer.per_parameter_options.apply import (  # noqa: E402
     parse_optimizer_per_params_config)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEIGHT = os.path.join(ROOT, "weights/gola_b224.bin")
 
-# The stage that is about to run.  S2 shares the spatial config (motion/memory off); S1 uses the
-# same file with the GOLA parameters frozen.
+# The stages that are about to run.  S1 is CodeTrack-only (parameter_scope), S2 is joint PEFT;
+# both use the spatial branch (motion/memory off).
+S1_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_s1/config.yaml")
+S3_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_s3/config.yaml")
+S4_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_s4/config.yaml")
 STAGE_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_s2/config.yaml")
 FULL_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_full/config.yaml")
 SMOKE_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_smoke/config.yaml")
+PREFLIGHT_CONFIG = os.path.join(ROOT, "config/GOLA/codetrack_preflight/config.yaml")
 
 # Loss/gradient probes need the temporal modules present to exercise them; the stage config
 # legitimately disables them (see codetrack_spatial.yaml), so the probe config turns them on.
@@ -71,6 +77,20 @@ def build(cfg=None):
     m.load_state_dict(load_file(WEIGHT), strict=False)
     return m
 
+
+
+def build_from_branch(branch_cfg: dict):
+    """Build the model with the exact CodeTrack branch a stage config declares.
+
+    ``requires_grad`` must be set the way the builder sets it (frozen DINOv2 base excluded via
+    ``requires_grad=False``, LoRA/head/embed/token-embed trainable).  Without that step every
+    ``parameter_scope`` query returns "no parameters", which is a probe artefact and not a
+    property of the config.
+    """
+    # ``enabled`` must be passed through: it is a bool field and the dataclass default is False,
+    # so stripping it silently constructs no CodeTrack branch at all (the previous revision of
+    # this helper did exactly that and every scope query returned "no parameters").
+    return build(dict(branch_cfg))
 
 def batch(b=2, seed=4):
     g = torch.Generator(device="cuda").manual_seed(seed)
@@ -106,6 +126,48 @@ def main() -> int:
           f"motion={ct_cfg.get('motion_enabled')} memory={ct_cfg.get('memory_enabled')}")
     check("stage config has no epoch-based warmup (stages warm up by update count)",
           int(sched.get("warmup_epochs", -1)) == 0, f"warmup_epochs={sched.get('warmup_epochs')}")
+
+    # ---- stage identity: length in optimizer updates, and a defined parameter scope ----------
+    stage_cfgs = {}
+    for path, label in ((S1_CONFIG, "S1"), (STAGE_CONFIG, "S2"), (S3_CONFIG, "S3"),
+                        (S4_CONFIG, "S4"), (FULL_CONFIG, "S3full"),
+                        (PREFLIGHT_CONFIG, "S0")):
+        try:
+            stage_cfgs[label] = load_stage_config(path)
+        except Exception as exc:  # noqa: BLE001
+            check(f"{label} config parses", False, f"{type(exc).__name__}: {exc}")
+
+    for label, cfg in stage_cfgs.items():
+        rt = cfg["run"]["runner"]["train"]
+        st = rt.get("stage") or {}
+        o = rt["optimization"]
+        ls = o["lr_scheduler"]
+        max_updates = st.get("max_updates")
+        warmup_updates = st.get("warmup_updates")
+        t_init = (ls.get("override") or {}).get("t_initial_updates")
+        warm = ls["parameters"].get("warmup_updates")
+        check(f"{label}: stage.max_updates is set and matches the cosine horizon",
+              max_updates is not None and t_init == max_updates,
+              f"max_updates={max_updates} t_initial_updates={t_init}")
+        check(f"{label}: warmup_updates matches between stage and scheduler",
+              warmup_updates is not None and warm == warmup_updates,
+              f"stage={warmup_updates} scheduler={warm}")
+
+    # S1 must be CodeTrack-only.  Without this the "S1" command silently ran S2-style joint PEFT,
+    # because the optimizer whitelist was hard-coded and no config could express the freeze.
+    # NOTE the location: ``parameter_scope`` belongs to ``optimization.optimizer``, which is where
+    # the parameter-selection code reads it -- not to the ``stage`` block.
+    s1_opt_cfg = (stage_cfgs.get("S1", {}).get("run", {}).get("runner", {}).get("train", {})
+                  .get("optimization", {}).get("optimizer", {}))
+    s1_scope = s1_opt_cfg.get("parameter_scope")
+    check("S1 declares parameter_scope = ['codetrack'] (GOLA frozen)",
+          s1_scope == ["codetrack"], f"parameter_scope={s1_scope}")
+    s2_opt_cfg = (stage_cfgs.get("S2", {}).get("run", {}).get("runner", {}).get("train", {})
+                  .get("optimization", {}).get("optimizer", {}))
+    s2_scope = s2_opt_cfg.get("parameter_scope")
+    check("S2 leaves parameter_scope at the framework default (joint PEFT)",
+          s2_scope is None, f"parameter_scope={s2_scope}")
+
     # every tensor rule must pin ndim=2 and every zero_1d rule must pin the 1-D/norm side,
     # otherwise a single rule can span learning-rate scopes (see B below)
     tensor_rules = [r for r in rules if r.get("type") != "zero_1d_param_weight_decay"]
@@ -168,6 +230,25 @@ def main() -> int:
                 if name_of.get(id(p), "").endswith((".lora.A", ".lora.B"))]
     check("lora.A / lora.B are optimised (the forward actually uses them)",
           len(lora_a_b) > 0, f"{len(lora_a_b)} tensors")
+
+    # ---- S1 really freezes GOLA -------------------------------------------------------------
+    # Same model and criterion, only the optimizer scope changes.  If this passes but the S1
+    # config lacked ``parameter_scope``, running "S1" would silently be S2.
+    s1_opt = stage_cfgs["S1"]["run"]["runner"]["train"]["optimization"]["optimizer"]
+    s1_groups = parse_optimizer_per_params_config(
+        m, crit, {"lr": s1_opt["lr"], "weight_decay": s1_opt["weight_decay"],
+                  "parameter_scope": s1_opt["parameter_scope"],
+                  "per_parameter": s1_opt["per_parameter"]})
+    s1_names = [name_of.get(id(p), "?") for g in s1_groups for p in g["params"]]
+    s1_foreign = [n for n in s1_names if not n.startswith("codetrack.")]
+    check("S1 optimizer contains CodeTrack parameters only",
+          bool(s1_names) and not s1_foreign,
+          f"{len(s1_names)} tensors, {len(s1_foreign)} foreign"
+          + (f" e.g. {s1_foreign[:2]}" if s1_foreign else ""))
+    s1_all_ct = sum(1 for n, p in m.named_parameters()
+                    if p.requires_grad and n.startswith("codetrack."))
+    check("S1 covers every CodeTrack tensor", len(s1_names) == s1_all_ct,
+          f"{len(s1_names)}/{s1_all_ct}")
 
     # A decay-eligible parameter that only a scoped ``zero_1d`` rule matches must be handed back
     # to the pool, not dropped.  CodeTrack has one: the 3-D ``codetrack.memory.base_prior``.
@@ -232,7 +313,9 @@ def main() -> int:
     for key in ("Loss/diag", "Loss/rec", "Loss/gain", "Loss/motion", "Loss/align",
                 "Loss/trc", "Loss/gate", "Loss/pres"):
         check(f"{key} is computed", key in co.metrics, f"= {co.metrics.get(key)}")
-    for key in ("Error/d_before", "Error/d_after", "Error/gain", "Error/q_mean"):
+    for key in ("Error/d_input", "Error/d_before", "Error/d_after", "Error/gain_total",
+                "Error/gain_refiner", "Error/gain_denoiser", "Error/q_mean",
+                "Error/q_auroc_mask", "Error/q_error_spearman"):
         check(f"{key} is reported", key in co.metrics, f"= {co.metrics.get(key)}")
 
     ex = out["codetrack_extras"]
@@ -242,16 +325,24 @@ def main() -> int:
           f" syndrome_target={None if ex.get('syndrome_target') is None else tuple(ex['syndrome_target'].shape)}")
     check("pre-denoise recovery tensor is exposed (needed for d_before)",
           ex.get("recovered_pre_denoise") is not None)
+    check("student input tokens are exposed (needed for d_input)",
+          ex.get("input_tokens") is not None,
+          f"input_tokens={None if ex.get('input_tokens') is None else tuple(ex['input_tokens'].shape)}")
 
     # Diagnosis ranking.  At initialisation the head is random, so AUROC ~ 0.5 is the EXPECTED
     # reading -- this check exists to prove the quantity is measurable and in a sane range before
     # training, and to leave the number in the log so the trend (it must rise above 0.5) is
     # visible.  A missing/inverted measurement is what would be a defect.
     thr = 0.25
-    auroc = _rank_auroc(ex["q"].detach().float(), ex["error_target"].detach().float(), thr=thr)
-    check("q AUROC is measurable and not wildly out of range at init",
-          auroc is not None and 0.2 <= auroc <= 0.8,
-          f"AUROC(q, error_target>{thr}) = {auroc} (expected ~0.5 for a random head)")
+    auroc_soft = _rank_auroc(ex["q"].detach().float(), ex["error_target"].detach().float(), thr=thr)
+    check("q AUROC (soft target) is measurable and not wildly out of range at init",
+          auroc_soft is not None and 0.2 <= auroc_soft <= 0.8,
+          f"AUROC(q, error_target>{thr}) = {auroc_soft} (expected ~0.5 for a random head)")
+    # The primary metric needs no threshold: the injector's own token label is the ground truth.
+    auroc_mask = _auroc_against_mask(ex["q"].detach().float(), ex["corruption_mask"])
+    check("q AUROC against the exact corruption mask is measurable",
+          auroc_mask is not None and 0.0 <= auroc_mask <= 1.0,
+          f"AUROC(q, corruption_mask) = {auroc_mask} (threshold-free primary metric)")
     check("error_target separates damaged from untouched tokens",
           float(ex["error_target"].detach().max()) > thr,
           f"max={float(ex['error_target'].detach().max()):.4f} mean={float(ex['error_target'].detach().mean()):.4f}")
@@ -264,15 +355,22 @@ def main() -> int:
     clean = ex.get("clean_tokens")
     rec = ex.get("recovered")
     pre = ex.get("recovered_pre_denoise")
-    if cor is not None and clean is not None and rec is not None and pre is not None and bool(cor.any()):
+    xin = ex.get("input_tokens")
+    if (cor is not None and clean is not None and rec is not None and pre is not None
+            and xin is not None and bool(cor.any())):
         cmask = cor.to(torch.bool)
-        rel = lambda x: (x - clean).norm(dim=-1) / clean.norm(dim=-1).clamp(min=1e-6)  # noqa: E731
-        d_before = float(rel(pre.detach())[cmask].mean())
+        # same angular metric as the criterion, so the gate and the loss cannot disagree
+        rel = lambda x: (1.0 - F.cosine_similarity(x.detach(), clean, dim=-1, eps=1e-6)).clamp(0, 2)  # noqa: E731
+        d_input = float(rel(xin)[cmask].mean())
+        d_before = float(rel(pre)[cmask].mean())
         d_after = float(rel(rec)[cmask].mean())
-        check("d_before/d_after are measured on corrupted tokens only",
-              d_before > 1e-3,
-              f"d_before={d_before:.6f} d_after={d_after:.6f} gain={d_before - d_after:+.2e} "
-              f"({int(cmask.sum())} tokens)")
+        check("d_input/d_before/d_after are measured on corrupted tokens only",
+              d_input > 1e-3,
+              f"d_input={d_input:.6f} d_before={d_before:.6f} d_after={d_after:.6f} "
+              f"gain_total={d_input - d_after:+.2e} ({int(cmask.sum())} tokens)")
+        check("d_input is strictly larger than the post-recovery distance",
+              d_input > d_before - 1e-6,
+              f"d_input={d_input:.6f} vs d_before={d_before:.6f} (recovery can only reduce it)")
         # At initialisation the residual gate is sigmoid(-8) ~ 3.4e-4, so the recovery is a
         # near-identity BY DESIGN and a non-positive gain here is expected, not a failure.  What
         # would be a failure is the branch being unable to move a damaged token more than a
@@ -298,6 +396,38 @@ def main() -> int:
     ratio = float(delta[:, :32].max() / delta[:, 32:].max().clamp(min=1e-12))
     check("damaged tokens are corrected more than healthy ones", ratio > 50,
           f"ratio = {ratio:.1f}x")
+
+    # ---- the noise half of "noise-modulated" must actually be alive -------------------------
+    # Regression: the module defaulted ``alpha`` to ones while the caller never passed it, so
+    # ``eps * (1 - alpha)`` was identically 0.  The write-back was gated correctly, which is why
+    # the loss still fell -- the dead half was invisible in every training curve.
+    d_noise = NoiseModulatedDenoiser(dim=16, hidden=16, heads=4, steps=2, cond_dim=16,
+                                     num_checks=4, motion_dim=2, memory_dim=8)
+    d_noise.train()
+    b, nn, cc = 4, 256, 16
+    zeros_tok = torch.zeros(b, nn, cc)
+    zeros_cond = torch.zeros(b, nn, cc)
+    err = torch.full((b, nn, 1), 0.01)
+    err[:, :32] = 0.99
+    captured = []
+    handle = d_noise.in_proj.register_forward_hook(
+        lambda mod, inp, out: captured.append(inp[0].detach().clone()))
+    dmg, healthy = [], []
+    for seed in range(8):
+        captured.clear()
+        torch.manual_seed(seed)
+        d_noise(zeros_tok, zeros_cond, syndrome=torch.zeros(b, 4),
+                motion=torch.zeros(b, 2), memory=torch.zeros(b, 8), token_error=err)
+        last = captured[-1]
+        dmg.append(float(last[:, :32].std()))
+        healthy.append(float(last[:, 32:].std()))
+    handle.remove()
+    mean_dmg = sum(dmg) / len(dmg)
+    mean_healthy = sum(healthy) / len(healthy)
+    noise_ratio = mean_dmg / max(mean_healthy, 1e-12)
+    check("noise injection reaches damaged tokens (not dead code)",
+          mean_dmg > 1e-3 and noise_ratio > 3.0,
+          f"damaged std={mean_dmg:.5f} healthy std={mean_healthy:.5f} ratio={noise_ratio:.1f}x")
 
     # ------------------------------------------------------------------ E
     print("\n" + "=" * 92)
@@ -367,22 +497,122 @@ def main() -> int:
     check("gradient accumulation averages (loss / accum) rather than summing",
           "/ self._grad_accumulation_steps" in src, "backward_loss")
 
-    # The scheduler's own time axis must match the update budget the stage driver assumes.
+    # The scheduler's own time axis must match the update budget the stage declares.  Built from
+    # the REAL stage scheduler config, so a missing override/warmup_updates shows up here rather
+    # than as a stage that quietly runs a different cosine horizon than its own max_updates.
     from trackit.runner.training.common.optimization.lr_scheduler.timm_scheduler.builder import (  # noqa: E402
         build_timm_lr_scheduler)
-    oc = dict(opt["optimizer"])
-    oc["lr_scheduler"] = opt["lr_scheduler"]
-    oc["lr_scheduler"]["override"] = {"num_epochs": 10}
-    fake_opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1e-4)
-    per_iter, _, warmup_steps = build_timm_lr_scheduler(
-        oc["lr_scheduler"], fake_opt, 1e-4, num_epochs=10,
-        num_iterations_per_epoch=16384, grad_accumulation_steps=16)
-    t_initial = per_iter.t_initial
-    check("scheduler cosine horizon counts optimizer updates (10 x 1024)",
-          t_initial == 10240, f"t_initial={t_initial}")
-    check("scheduler warmup is 0 updates with warmup_epochs 0",
-          warmup_steps == 0, f"warmup_t={per_iter.warmup_t}")
+    for label in ("S1", "S2", "S3", "S4", "S3full", "S0"):
+        cfg = stage_cfgs.get(label)
+        if cfg is None:
+            continue
+        rt = cfg["run"]["runner"]["train"]
+        ls_cfg = rt["optimization"]["lr_scheduler"]
+        st = rt["stage"]
+        fake_opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=1e-4)
+        per_iter, _, warmup_steps = build_timm_lr_scheduler(
+            ls_cfg, fake_opt, rt["optimization"]["optimizer"]["lr"], num_epochs=10,
+            num_iterations_per_epoch=16384, grad_accumulation_steps=16)
+        check(f"{label}: built cosine horizon == stage.max_updates",
+              per_iter.t_initial == st["max_updates"],
+              f"t_initial={per_iter.t_initial} max_updates={st['max_updates']}")
+        check(f"{label}: built warmup == stage.warmup_updates",
+              per_iter.warmup_t == st["warmup_updates"],
+              f"warmup_t={per_iter.warmup_t} stage={st['warmup_updates']}")
+        # Without the override the horizon would silently fall back to a 10-epoch value, which is
+        # exactly the coupling between "stage length" and "num_epochs" this replaces.
+        check(f"{label}: horizon is NOT the epoch-derived fallback",
+              per_iter.t_initial != 10 * (16384 // 16) or st["max_updates"] == 10240,
+              f"t_initial={per_iter.t_initial}")
 
+
+
+    # ------------------------------------------------------------------ I
+    print("\n" + "=" * 92)
+    print("I. PER-STAGE OPTIMIZER SCOPE AND LR ROUTING (LIVE MODEL)")
+    print("=" * 92)
+    # Each stage must select a DIFFERENT parameter set, otherwise "stage" is a label and not a
+    # mechanism.  The probe model is rebuilt once per stage *scope*, not once per config: the
+    # temporal stages need motion/memory modules that the spatial probe deliberately omits, and
+    # ``parse_optimizer_per_params_config`` prints one line per parameter (handled below), so
+    # reusing a single model keeps this section to seconds instead of minutes.
+    import contextlib
+    import io as _io
+
+    def scope_union(cfg):
+        """(set of optimised names, {name: lr}) for a stage config, on a matching probe model."""
+        probe = build_from_branch(cfg["model"]["codetrack"])
+        probe.cuda().train()
+        probe_name_of = {id(p): n for n, p in probe.named_parameters()}
+        probe_crit = CodeTrackCriteria().cuda()
+        o = cfg["run"]["runner"]["train"]["optimization"]["optimizer"]
+        sink = _io.StringIO()
+        with contextlib.redirect_stdout(sink):
+            gs = parse_optimizer_per_params_config(probe, probe_crit, {
+                "lr": o["lr"], "weight_decay": o["weight_decay"],
+                "parameter_scope": o.get("parameter_scope"),
+                "per_parameter": o["per_parameter"]})
+        lrs = {}
+        for g in gs:
+            for p in g["params"]:
+                lrs[probe_name_of.get(id(p), "?")] = g.get("lr", o["lr"])
+        del probe, probe_crit
+        torch.cuda.empty_cache()
+        return set(lrs), lrs
+
+    scopes = {}
+    for label in ("S1", "S2", "S3", "S4"):
+        if label not in stage_cfgs:
+            continue
+        try:
+            names, lrs = scope_union(stage_cfgs[label])
+        except Exception as exc:  # noqa: BLE001
+            check(f"{label} optimizer scope resolvable", False, f"{type(exc).__name__}: {exc}")
+            continue
+        scopes[label] = (names, lrs)
+        print(f"  [{label}] {len(names)} optimised tensors", flush=True)
+
+    if "S1" in scopes and "S2" in scopes:
+        check("S1 selects a strictly smaller parameter set than S2 (freeze is real)",
+              scopes["S1"][0] < scopes["S2"][0],
+              f"S1={len(scopes['S1'][0])} S2={len(scopes['S2'][0])}")
+    if "S2" in scopes and "S3" in scopes:
+        check("S3 adds DINOv2 last-2 base weights to S2",
+              len(scopes["S3"][0]) > len(scopes["S2"][0]),
+              f"S2={len(scopes['S2'][0])} S3={len(scopes['S3'][0])}")
+        dino = [n for n in scopes["S3"][0] if n.startswith("blocks.") and "lora" not in n]
+        check("S3 unfreezes only blocks 10/11 base weights",
+              bool(dino) and all(n.startswith(("blocks.10.", "blocks.11.")) for n in dino),
+              f"{len(dino)} tensors, e.g. {sorted(dino)[:2]}")
+    if "S4" in scopes:
+        names, lrs = scopes["S4"]
+        temporal = [n for n in names if ".motion." in n or ".memory." in n or "template_gate" in n]
+        check("S4 enables the temporal parameters", bool(temporal), f"{len(temporal)} tensors")
+        # the DINOv2 base weights must be FROZEN again in S4
+        dino4 = [n for n in names if n.startswith("blocks.") and "lora" not in n]
+        check("S4 re-freezes the DINOv2 base weights", not dino4,
+              f"{len(dino4)} unexpectedly trainable")
+
+    # LR routing for the S3 foundation blocks: they must get the small foundation lr, not the
+    # base lr.  Falling through to 1e-4 would be ~70x too large for a pretrained block.
+    if "S3" in scopes:
+        _, lrs = scopes["S3"]
+        dino_names = sorted(n for n in lrs if n.startswith(("blocks.10.", "blocks.11."))
+                            and "lora" not in n)
+        if dino_names:
+            got = lrs[dino_names[0]]
+            check("S3 routes DINOv2 last-2 to the foundation lr (1.5e-6)",
+                  got == 1.5e-6, f"{dino_names[0]} -> lr={got}")
+        # block 0 must not be in the optimizer at all
+        check("S3 leaves the first ten DINOv2 blocks out of the optimizer",
+              not any(n.startswith("blocks.0.") for n in lrs))
+    if "S4" in scopes:
+        _, lrs = scopes["S4"]
+        motion_names = [n for n in lrs if ".motion." in n and n.endswith(".weight")]
+        if motion_names:
+            got = lrs[sorted(motion_names)[0]]
+            check("S4 routes motion to 1e-4", got == 1e-4,
+                  f"{sorted(motion_names)[0]} -> lr={got}")
     print("\n" + "=" * 92)
     bad = [r for r in RESULTS if not r[1]]
     print(f"RESULT: {len(RESULTS) - len(bad)}/{len(RESULTS)} checks pass")

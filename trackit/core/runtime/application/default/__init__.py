@@ -63,6 +63,12 @@ def run_task(model_manager: ModelManager, task_desc: ApplicationTaskDescription,
             metric_logger.commit()
             if is_train:
                 global_step_counter.update(batch_size)
+            # A staged recipe defines each stage by an optimizer-update budget rather than by
+            # epochs, so the runner can ask to stop mid-epoch.  Without this the stage length
+            # could only be approximated by tuning num_epochs x samples_per_epoch.
+            if runner.should_stop():
+                print(f'[stage] update budget reached; stopping after epoch {epoch}', flush=True)
+                break
 
         collective_communication.end()  # may call run() as well
 
@@ -135,6 +141,9 @@ class DefaultApplication:
                     if task.is_train:
                         if self._checkpoint_dumper is not None:
                             self._checkpoint_dumper.temporary_dump(epoch, self._model_manager.version, self._model_manager.state_dict)
+
+            if self._context_manager.should_stop():
+                break
 
             if self._checkpoint_dumper is not None:
                 self._checkpoint_dumper.dump(epoch, get_current_epoch_metrics().get(epoch), self._model_manager.version,

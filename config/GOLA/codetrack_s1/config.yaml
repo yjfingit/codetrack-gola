@@ -15,7 +15,7 @@
 #
 # Batch: 8 x 16 = 128, matching the upstream GOLA recipe.  Measured peak at micro_batch=8 is
 # 4.40 GiB of 23.5 GiB, so accumulation is what reaches the upstream batch size without OOM.
-name: "CodeTrack/preflight (512 updates)"
+name: "CodeTrack/B-224 S1 spatial recovery"
 
 logging:
   category: "CodeTrack"
@@ -139,9 +139,9 @@ run:
       # ends when ``max_updates`` optimizer steps have been taken, and the cosine
       # horizon below is set to the same number.
       stage:
-        name: "S0-preflight"
-        max_updates: 512
-        warmup_updates: 0
+        name: "S1"
+        max_updates: 1500
+        warmup_updates: 128
       optimization:
         optimizer:
           type: "AdamW"
@@ -190,11 +190,11 @@ run:
             # ``stage.max_updates`` exactly; deriving it from epochs would make the stage
             # length an approximation of num_epochs x samples_per_epoch.
             num_epochs: 10
-            t_initial_updates: 512
+            t_initial_updates: 1500
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
-            warmup_updates: 0
+            warmup_updates: 128
             warmup_epochs: 0
             warmup_lr: 1.e-7
         auto_mixed_precision:

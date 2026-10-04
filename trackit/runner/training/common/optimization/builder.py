@@ -43,10 +43,26 @@ def build_default_optimization_modules(model: torch.nn.Module, criterion: Option
         autograd_detect_anomaly_fn = partial(torch.autograd.detect_anomaly, check_nan=detect_grad_nan)
         print(f'optimization: torch.autograd.detect_anomaly is enabled. check_nan: {detect_grad_nan}')
 
+    # A staged recipe is defined by an optimizer-update budget, not by epochs.  ``stage`` is an
+    # optional block; when absent the runner falls back to ``num_epochs`` exactly as before.
+    # NOTE: ``parameter_scope`` lives under ``optimization.optimizer`` (that is where the
+    # optimizer's parameter-selection code reads it) -- it is NOT a key of ``stage``.  Printing it
+    # from the wrong place reported "<default>" for a CodeTrack-only stage, which is exactly the
+    # kind of misleading log that hides a freeze that did not happen.
+    stage_config = runner_config.get('stage') or {}
+    stage_max_updates = stage_config.get('max_updates')
+    if stage_max_updates is not None:
+        stage_max_updates = int(stage_max_updates)
+        scope = (optimization_config.get('optimizer') or {}).get('parameter_scope')
+        print(f"stage: {stage_config.get('name', '<unnamed>')}: max_updates={stage_max_updates}, "
+              f"warmup_updates={stage_config.get('warmup_updates')}, "
+              f"parameter_scope={scope if scope is not None else '<framework default>'}", flush=True)
+
     return OptimizationModulesAndOptions(optimizer, is_apex_optimizer,
                                          lr_scheduler_per_iteration, lr_scheduler_per_epoch,
                                          weight_decay_scheduler_per_iteration, weight_decay_scheduler_per_epoch,
                                          amp_parameter_updater, amp_auto_cast_fn,
                                          ema,
                                          autograd_detect_anomaly_fn,
-                                         grad_accumulation_steps, zero_grad_set_to_none)
+                                         grad_accumulation_steps, zero_grad_set_to_none,
+                                         max_updates=stage_max_updates)

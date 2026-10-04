@@ -15,7 +15,7 @@
 #
 # Batch: 8 x 16 = 128, matching the upstream GOLA recipe.  Measured peak at micro_batch=8 is
 # 4.40 GiB of 23.5 GiB, so accumulation is what reaches the upstream batch size without OOM.
-name: "CodeTrack/preflight (512 updates)"
+name: "CodeTrack/B-224 S3 DINOv2 last-2"
 
 logging:
   category: "CodeTrack"
@@ -48,12 +48,12 @@ model:
     use_rslora: false
   num_vpt_tokens: 10
   adapter_reduction_factor: 16
-  codetrack: !include "../dinov2/codetrack_spatial.yaml"
+  codetrack: !include "../dinov2/codetrack_s3_branch.yaml"
 
 run:
   type: "default"
 
-  num_epochs: 10
+  num_epochs: 1
 
   efficiency_assessment:
     enabled: false
@@ -87,7 +87,7 @@ run:
         parameters: !include "../../_dataset/train-lasher.yaml"
       sampler:
         type: "random"
-        samples_per_epoch: 131072
+        samples_per_epoch: 230400
         seed: 42
         weight:
           - match:
@@ -139,20 +139,18 @@ run:
       # ends when ``max_updates`` optimizer steps have been taken, and the cosine
       # horizon below is set to the same number.
       stage:
-        name: "S0-preflight"
-        max_updates: 512
-        warmup_updates: 0
+        name: "S3"
+        max_updates: 1800
+        warmup_updates: 256
       optimization:
         optimizer:
           type: "AdamW"
-          lr: 1.e-4
+          lr: 5.e-5
           weight_decay: 0.1
           fused: false
-          # S1 = "train CodeTrack only, GOLA frozen".  Without this knob the stage had
-          # no implementation at all: running the "S1" command actually ran S2-style
-          # joint PEFT.  Absent => the framework default prefixes (lora.A/B/GA/GB,
-          # embed, head, codetrack), which is what S2 uses.
-          parameter_scope: [ "codetrack" ]
+          # S3 additionally unfreezes the LAST TWO DINOv2 blocks (their base weights only;
+          # their LoRA adapters were already in scope).  The first ten blocks stay frozen.
+          parameter_scope: ["lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack", "blocks.10.", "blocks.11."]
           # ORDER AND STRUCTURE MATTER.
           #
           # ``zero_1d_param_weight_decay`` collects the parameters that must not be decayed
@@ -162,19 +160,41 @@ run:
           # the first ``zero_1d`` rule swallows the biases/norms of the whole model (59 tensors
           # once CodeTrack is enabled) and the per-scope rules below it match nothing.
           # See config/GOLA/codetrack_full/config.yaml for the measured group/lr table.
-          # S1 trains CodeTrack ONLY: ``parameter_scope`` below restricts the optimizer to
-          # names containing "codetrack", so the LoRA adapters, the GOLA head and
-          # ``token_type_embed`` are not optimised at all during this stage.  The lora/head/
-          # embed rules are consequently absent: a rule that matches no parameter trips the
-          # framework's ``assert len(named_params) > 0, "rule must be effective"``.
           per_parameter:
+            # No motion/memory-specific rule here.  This stage sets ``motion_enabled`` and
+            # ``memory_enabled`` to false in dinov2/codetrack_spatial.yaml, so such a rule would
+            # match zero parameters and the framework asserts every rule is effective
+            # ("rule must be effective").  Nothing is lost: the generic ``codetrack\.`` rule
+            # below assigns them 1e-4, which is the same value the full config uses.
             - name_regex: 'codetrack\.'
               ndim: 2
-              lr: 1.e-4
+              lr: 5.e-5
+            - name_regex: 'lora'
+              ndim: 2
+              lr: 1.e-5
+            - name_regex: '^head\.'
+              ndim: 2
+              lr: 5.e-6
+            - name_regex: '^blocks\.1[01]\.'
+              ndim: 2
+              lr: 1.5e-6
+            - name_regex: 'token_type_embed'
+              ndim: 2
+              lr: 1.e-5
+              weight_decay: 0.
+            # ``codetrack.memory.base_prior`` (the only 3-D tensor) is absent here: memory is
+            # disabled in this stage, so a rule for it would match nothing and trip the
+            # framework's "rule must be effective" assert.  It IS explicitly scoped in
+            # codetrack_full, where the module exists.
             - type: "zero_1d_param_weight_decay"
               ndim: [ 0, 1 ]
               name_regex: 'codetrack\.'
-              lr: 1.e-4
+              lr: 5.e-5
+            - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
+              name_regex: '^head\.'
+              lr: 5.e-6
+            - type: "zero_1d_param_weight_decay"
         grad_accumulation_steps: 16
         max_grad_norm: 1.0
         zero_grad_set_to_none: true
@@ -190,11 +210,11 @@ run:
             # ``stage.max_updates`` exactly; deriving it from epochs would make the stage
             # length an approximation of num_epochs x samples_per_epoch.
             num_epochs: 10
-            t_initial_updates: 512
+            t_initial_updates: 1800
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
-            warmup_updates: 0
+            warmup_updates: 256
             warmup_epochs: 0
             warmup_lr: 1.e-7
         auto_mixed_precision:

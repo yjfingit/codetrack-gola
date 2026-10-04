@@ -130,10 +130,16 @@ def main() -> int:
     check("refiner residual is gated by q",
           "suspect_idx" in src["refiner"] and "q[" in src["refiner"],
           "delta = q_i * dX_i, so low-severity suspects move little")
-    # (e) the denoiser write-back must be gated per token (fixed this round)
-    check("denoiser write-back is gated per token by alpha",
-          "w * alpha * pred" in src["denoiser"],
+    # (e) the denoiser write-back AND its noise must both be gated per token by the error
+    # probability.  The name is ``write_gate``/``noise_gate`` now: the old ``alpha`` argument was
+    # never passed by the caller, so ``1 - alpha`` was 0 and the noise was dead code -- a check
+    # that only looks for "alpha" in the source would have kept passing on broken behaviour.
+    check("denoiser write-back is gated per token by the error probability",
+          "w * write_gate * pred" in src["denoiser"],
           "was `w * pred` (global scalar) -- noise was per-token but the correction was not")
+    check("denoiser noise is gated per token by the same error probability",
+          "eps = eps * noise_gate" in src["denoiser"],
+          "was `eps * (1 - alpha)` with alpha defaulting to 1 -> the noise was identically 0")
 
     print("\n" + "=" * 96)
     print("P4  NO SHORTCUT INTO THE TRACKING HEAD")

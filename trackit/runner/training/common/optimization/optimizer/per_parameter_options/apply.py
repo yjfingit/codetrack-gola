@@ -38,10 +38,24 @@ def parse_optimizer_per_params_config(model: nn.Module, criterion: Optional[nn.M
     # ``.lora.GB.{i}``); all 1296 of them receive gradient, but only the ``.G*`` names matched
     # this whitelist, so 144 base parameters -- which the forward pass actually consumes --
     # were silently never updated by the optimizer.
-    trainable_prefixes = ("lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack")
+    #
+    # ``parameter_scope`` makes the whitelist explicit per training stage.  Stage S1 is defined
+    # as "train CodeTrack only, GOLA frozen", which is expressed as
+    # ``parameter_scope: ["codetrack"]`` in the stage config; without this knob the staged
+    # recipe had no implementation at all -- running the "S1" config actually ran S2-style joint
+    # PEFT, and nothing in the codebase could express the freeze.
+    default_prefixes = ("lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack")
+    trained_prefixes = tuple(optimizer_config.get("parameter_scope") or default_prefixes)
+    # ``backbone_scope`` names frozen trunk parameters that a stage has explicitly unlocked (see
+    # ``GOLA/builder._unfreeze_backbone_scope``).  They are not part of the PEFT whitelist, so
+    # without this list they would receive gradients and never be updated -- the same
+    # "gradients but no optimizer" failure that already bit the lora.A/lora.B parameters.
+    backbone_prefixes = tuple(optimizer_config.get("backbone_scope") or ())
     model_named_parameters = {
         name: param for name, param in model.named_parameters()
-        if param.requires_grad and any(p in name for p in trainable_prefixes)
+        if param.requires_grad and (any(p in name for p in trained_prefixes)
+                                    or (backbone_prefixes
+                                        and any(name.startswith(p) for p in backbone_prefixes)))
     }
 
     criterion_named_parameters = {name: param for name, param in criterion.named_parameters() if param.requires_grad} if criterion is not None else None

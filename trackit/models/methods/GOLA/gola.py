@@ -377,6 +377,12 @@ class GOLA_DINOv2(nn.Module):
             # statistic need the *before* state of the recovery, and ``X_rec`` is exactly that:
             # the refiner's output before the diffusion-correction block touches it.
             "recovered_pre_denoise": out["X_rec"],
+            # The student's *input* token stream X_t (the corrupted search representation, before
+            # any recovery).  ``d_input = d(X_t, X_clean)`` is the honest denominator for the whole
+            # recovery claim: ``L_gain`` used to compare only ``X_rec`` against clean, which proves
+            # "the denoiser improves on the refiner" and not "CodeTrack improves on what it was
+            # given".  The paper-level criterion is ``d_final < d_input``.
+            "input_tokens": out["tokens"]["X_TIR"],
             "q": out["q"], "s": out["s"],
             # raw pre-sigmoid evidence: the diagnosis loss must be the autocast-safe
             # ``*_with_logits`` form, because ``binary_cross_entropy`` on a sigmoid output aborts

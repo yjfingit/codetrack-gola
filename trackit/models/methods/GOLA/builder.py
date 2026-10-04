@@ -11,6 +11,40 @@ def get_GOLA_build_context(config: dict):
                                 build_sample_input_data_generator(config))
 
 
+def _unfreeze_backbone_scope(model, codetrack_config) -> None:
+    """Re-enable gradient on an explicitly named slice of the otherwise-frozen DINOv2 trunk.
+
+    ``GOLA_DINOv2.__init__`` sets ``requires_grad = False`` on every parameter before applying the
+    LoRA adapters, so a stage that wants to fine-tune a couple of transformer blocks cannot do it
+    purely from the optimizer configuration: ``parse_optimizer_per_params_config`` only ever sees
+    parameters whose ``requires_grad`` is already True.
+
+    Stage S3 needs exactly that (DINOv2 last-2 blocks), so the unlock is config-driven and
+    narrow: ``codetrack.backbone_scope`` is a list of name prefixes, and only parameters with a
+    *base* (non-adapter) name under those prefixes are unlocked.  Any other stage leaves the key
+    absent and the trunk stays fully frozen, exactly as before.
+    """
+    if not codetrack_config:
+        return
+    scope = codetrack_config.get('backbone_scope') or []
+    if not scope:
+        return
+    unlocked = []
+    for name, param in model.named_parameters():
+        # never touch the LoRA adapters here -- they are already trainable and are governed by the
+        # adapter learning-rate group, not by the foundation group.
+        if "lora" in name:
+            continue
+        if any(name.startswith(prefix) for prefix in scope):
+            param.requires_grad = True
+            unlocked.append(name)
+    print(f"backbone_scope: unlocked {len(unlocked)} frozen DINOv2 parameters under {list(scope)}")
+    for name in unlocked[:6]:
+        print(f"  + {name}")
+    if len(unlocked) > 6:
+        print(f"  ... and {len(unlocked) - 6} more")
+
+
 def build_GOLA_model(config: dict, model_impl_suggestions: ModelImplSuggestions):
     model_config = config['model']
     common_config = config['common']
@@ -38,6 +72,7 @@ def build_GOLA_model(config: dict, model_impl_suggestions: ModelImplSuggestions)
                                  model_config['lora']['r'], model_config['lora']['alpha'],
                                  model_config['lora']['dropout'], model_config['lora']['use_rslora'],
                                  codetrack_config=model_config.get('codetrack'))
+            _unfreeze_backbone_scope(model, model_config.get('codetrack'))
     elif model_type == 'dinov2_full_finetune':
         from .gola_full_finetune import GOLABaseline_DINOv2
         model = GOLABaseline_DINOv2(backbone, common_config['template_feat_size'], common_config['search_region_feat_size'])

@@ -60,6 +60,17 @@ class DefaultTrainer(Runner):
         self.task_name = None
         self.is_train = True
         self._iteration = 0
+        # Optional optimizer-update budget for a training stage.  ``None`` keeps the historical
+        # "run for ``num_epochs``" behaviour.  A staged recipe (S1 = 1500 updates, S2 = 8000, ...)
+        # is defined by update counts, so the runner reports when the budget is exhausted and the
+        # application's epoch loop ends the stage mid-epoch via ``GlobalContextManager.should_stop``.
+        max_updates = optimization_modules.max_updates
+        self._max_updates = int(max_updates) if max_updates is not None else None
+        self._stop_requested = False
+
+    def should_stop(self) -> bool:
+        """True once the configured optimizer-update budget has been consumed."""
+        return self._stop_requested
 
     def _deferred_init(self):
         if self._init:
@@ -210,6 +221,8 @@ class DefaultTrainer(Runner):
                         self._wd_scheduler_per_iteration.step_update(optimizer_step)
                     if self._ema is not None:
                         self._ema.update_parameters(self._raw_model)
+                    if self._max_updates is not None and optimizer_step >= self._max_updates:
+                        self._stop_requested = True
             else:
                 metrics = reduce_dict_async(metrics)
 

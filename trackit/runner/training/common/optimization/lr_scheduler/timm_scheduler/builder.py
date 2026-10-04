@@ -13,6 +13,17 @@ def build_timm_lr_scheduler(lr_scheduler_config: dict, optimizer: torch.optim.Op
     if 'parameters' in lr_scheduler_config:
         config.update(lr_scheduler_config['parameters'])
 
+    # ---- update-level stage controls ------------------------------------------------
+    # A staged recipe defines its length in optimizer updates, so the cosine horizon and the
+    # warmup must be expressible in the same unit.  Deriving them from epochs means a stage's
+    # own length can only be approximated by choosing ``num_epochs`` x ``samples_per_epoch``,
+    # which is exactly the coupling that made the staged plan unimplementable.
+    #   override.t_initial_updates : cosine horizon, in optimizer updates
+    #   warmup_updates             : warmup length, in optimizer updates
+    override = lr_scheduler_config.get('override') or {}
+    t_initial_updates = override.get('t_initial_updates')
+    warmup_updates = config.get('warmup_updates')
+
     warmup_t = config['warmup_epochs']
     warmup_lr = config['warmup_lr'] if 'warmup_lr' in config else lr * config['warmup_lr_mul']
 
@@ -22,6 +33,10 @@ def build_timm_lr_scheduler(lr_scheduler_config: dict, optimizer: torch.optim.Op
 
     if per_iteration:
         warmup_t *= num_updates_per_epoch
+
+    if warmup_updates is not None:
+        warmup_t = int(warmup_updates)
+        warmup_logging_items['warmup_updates'] = warmup_t
 
     if sched_type == 'cosine':
         from timm.scheduler.cosine_lr import CosineLRScheduler
@@ -38,6 +53,9 @@ def build_timm_lr_scheduler(lr_scheduler_config: dict, optimizer: torch.optim.Op
             t_initial = 1
         if per_iteration:
             t_initial *= num_updates_per_epoch
+        if t_initial_updates is not None:
+            t_initial = int(t_initial_updates)
+            scheduler_logging_items['t_initial_updates'] = t_initial
         lr_scheduler = CosineLRScheduler(optimizer, t_initial,
                                          lr_min=lr_min,
                                          cycle_mul=cycle_mul,

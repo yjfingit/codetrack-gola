@@ -395,10 +395,16 @@ class CodeTrack(nn.Module):
                 # (B, F, memory_dim) -> (B, memory_dim): the frame axis is reduced, and the
                 # result stays at memory_dim so it matches the denoiser's condition width.
                 mem_cond = prior_tokens.mean(dim=1)
+            # Both gates are passed explicitly and both are q.  The noise gate in particular
+            # MUST be passed: while the parameter defaulted inside the module, the caller never
+            # supplied it, so ``1 - alpha`` evaluated to 0 and no token ever received noise --
+            # the "noise-modulated" half of block 5b was silently inert.  Making the argument
+            # explicit (and removing ``alpha``) means the failure cannot recur silently.
             den = self.denoiser(X_rec, condition, syndrome=out_s,
                                 motion=motion_cond, memory=mem_cond,
                                 token_error=token_error.unsqueeze(-1),
                                 token_trust=token_trust.unsqueeze(-1),
+                                noise_gate=token_error.unsqueeze(-1),
                                 noise_weak=self.cfg.noise_weak_std,
                                 noise_strong=self.cfg.noise_strong_std,
                                 strong_prob=self.cfg.noise_strong_prob)
@@ -407,11 +413,25 @@ class CodeTrack(nn.Module):
             den = {"X_denoised": X_rec, "step_preds": []}
             X_final = X_rec
 
-        # identity preservation on reliable tokens (exact, not learned)
+        # ---- identity preservation on the tokens recovery was NOT asked to touch ----------
+        # The anchor used to be ``~corruption_mask`` (the injector's ground truth), which does not
+        # correspond to anything the branch actually does: the refiner rewrites only
+        # ``TopK(q)`` suspects, so the two sets overlap only partially.  Measured consequence at
+        # 300 optimizer updates: no token stayed put, ``Loss/pres`` rose from 5.6e-5 to 0.95, and
+        # ``d_final`` (1-cos vs clean) went from 0.055 to 0.143 while ``d_input`` stayed at 0.117.
+        # Anchoring on "the tokens the recovery did **not** select" makes the penalty describe the
+        # branch's own contract: untouched tokens must come out untouched.
         preserve = None
-        if corruption_mask is not None:
-            keep = ~corruption_mask
-            if keep.any():
+        if X_final is not None:
+            keep = None
+            if suspect is not None and suspect.numel() > 0:
+                bidx_p = torch.arange(b, device=X_t.device)[:, None].expand_as(suspect)
+                keep = torch.ones(b, X_t.shape[1], dtype=torch.bool, device=X_t.device)
+                keep[bidx_p, suspect] = False
+            elif corruption_mask is not None:
+                # fall back to the injector's mask when there is no routing decision to honour
+                keep = ~corruption_mask
+            if keep is not None and bool(keep.any()):
                 preserve = (X_final[keep] - X_t[keep]).abs().mean()
 
         mv = self.meanvar(X_final)

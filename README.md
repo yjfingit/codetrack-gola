@@ -125,27 +125,47 @@ Implemented in `codetrack/`; the only changes to upstream `trackit/` are four ad
 ```bash
 source scripts/00_env.sh                     # required: turbojpeg + CuBLAS determinism
 bash scripts/preflight.sh                    # env / weights / dataset self-check
-"$PYTHON" tools/preflight_acceptance.py      # 55 structural checks against the REAL stage config
+"$PYTHON" tools/preflight_acceptance.py      # 86 structural checks against the REAL stage configs
 "$PYTHON" tools/codetrack_verify.py          # identity @ step 0, checkpoint, shape audit, gradients
 "$PYTHON" tools/dataflow_audit.py            # instrumented real training step: who talks to whom
 "$PYTHON" tools/complementarity_check.py     # 16 assertions that the modules cannot collapse into each other
 "$PYTHON" tools/causality_check.py           # the current frame's GT must not reach the current output
 "$PYTHON" tools/lora_grad_check.py           # LoRA actually trains, backbone does not drift
-"$PYTHON" tools/recovery_report.py -8 -5     # d_before/d_after/gain/AUROC for the residual-gate ablation
+"$PYTHON" tools/recovery_report.py            # real -8 vs -5 training: gain_total / AUROC
 bash scripts/codetrack_train_smoke.sh        # single-sequence joint training
 bash scripts/codetrack_eval_single.sh        # single-sequence inference (official eval pipeline)
 ```
 
 **Training stages**
 
+Each stage is defined by an **optimizer-update budget** (`stage.max_updates`), not by epochs, and
+by an explicit `optimizer.parameter_scope`. S1 trains CodeTrack only and leaves GOLA frozen;
+S2 unfreezes the LoRA adapters, the head and the token-type embedding.
+
 ```bash
-# S0 (300-500 updates, ~50 min) -- must pass before any long run
+# S0 -- 512 updates, CodeTrack-only. Must pass before any long run.
 "$PYTHON" main.py GOLA codetrack_preflight --distributed_nproc_per_node 1 --disable_wandb \
-  --weight_path "$WEIGHT" --output_dir="$PWD/outputs/preflight"
-# S1/S2 (spatial, temporal off)  S3/S4 use codetrack_full (temporal on)
+  --weight_path "$WEIGHT" --output_dir="$PWD/outputs/s0"
+
+# S1 -- 1500 updates, parameter_scope = ["codetrack"]  (GOLA frozen)
+"$PYTHON" main.py GOLA codetrack_s1 --distributed_nproc_per_node 1 --disable_wandb \
+  --weight_path "$WEIGHT" --output_dir="$PWD/outputs/s1"
+
+# S2 -- 8000 updates, joint PEFT (framework default scope)
 "$PYTHON" main.py GOLA codetrack_s2 --distributed_nproc_per_node 1 --disable_wandb \
   --weight_path "$WEIGHT" --output_dir="$PWD/outputs/s2"
+
+# residual-gate ablation, 600 updates per arm, only variable = residual_gate_init
+"$PYTHON" main.py GOLA codetrack_s1 --mixin_config codetrack_gate_neg8 --disable_wandb \
+  --distributed_nproc_per_node 1 --weight_path "$WEIGHT" --output_dir="$PWD/outputs/abl_neg8"
+"$PYTHON" main.py GOLA codetrack_s1 --mixin_config codetrack_gate_neg5 --disable_wandb \
+  --distributed_nproc_per_node 1 --weight_path "$WEIGHT" --output_dir="$PWD/outputs/abl_neg5"
+
+# compare the two arms (prints gain_total / q_auroc_mask / clean drift and a machine-readable GO)
+"$PYTHON" tools/recovery_report.py --gates -8,-5 --updates 600
 ```
+
+S3/S4 use `codetrack_full` (temporal branch on).
 
 **Verified state** (details and numbers in `docs/implementation.md`)
 
@@ -154,6 +174,10 @@ bash scripts/codetrack_eval_single.sh        # single-sequence inference (offici
 - all 10 new modules receive a non-zero gradient from the real criterion
 - optimizer owns **1406/1406** trainable tensors, with per-scope lr routing and `wd=0` on every
   bias/norm; LoRA 1296/1296 moves, frozen backbone drifts by 0
+- **S1 freeze is real**: with `parameter_scope: ["codetrack"]` the optimizer holds 97 CodeTrack
+  tensors and zero `blocks.*` / `head.*` / `lora` tensors
+- **the noise half of block 5b is alive**: injected noise is 98.2x stronger on tokens the
+  diagnosis flags as damaged (it was identically zero before)
 - 50 real optimizer steps on a fixed batch move `codetrack.H.H` by 3.6e-3 and the refiner/denoiser
   by ~6e-3, i.e. the recovery branch is trainable even though the residual gate starts at
   `sigmoid(-8) ~ 3.4e-4`

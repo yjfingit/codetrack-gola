@@ -49,6 +49,19 @@ class GlobalContextManager:
         set_current_task_context(task_context)
         set_current_epoch_context(EpochContext(epoch))
 
+    def should_stop(self) -> bool:
+        """True when the activated runner has exhausted its optimizer-update budget.
+
+        Staged recipes (S1 = 1500 updates, S2 = 8000, ...) are defined by update counts, not by
+        epochs, so the epoch loop must be able to end a stage mid-epoch.  ``getattr`` keeps this
+        a no-op for every runner that does not implement the optional hook.
+        """
+        for runner_context in self._runner_contexts.values():
+            runner = getattr(runner_context, 'runner', None)
+            if runner is not None and bool(getattr(runner, 'should_stop', lambda: False)()):
+                return True
+        return False
+
     @staticmethod
     def finalize():
         set_current_data_context(None)

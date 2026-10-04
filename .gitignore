@@ -42,4 +42,8 @@ __pycache__/
 consts.yaml.eval_backup
 data/LasHeR_single/
 data/LasHeR_train_single/
+data/LasHeR_train10/
+
+# Mixins written at run time by tools/train_codetrack_staged.py (rebuilt on every run).
+config/GOLA/_mixin/staged_*.yaml
 *.log
