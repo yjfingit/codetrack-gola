@@ -1,16 +1,17 @@
-# CodeTrack smoke-training config: GOLA-B + CodeTrack on ONE LasHeR sequence.
+# CodeTrack full training: GOLA-B (pretrained, frozen backbone + trainable LoRA) + CodeTrack
+# on the whole LasHeR training set (979 sequences).
 #
 # Self-contained `run:` block (the upstream run.yaml is not included) because the mixin
 # machinery can only *replace existing keys* -- `json_query_replace` skips a key that is not
 # already present -- so the `codetrack` criterion cannot be introduced by a mixin.
-# The single sequence comes from consts.LasHeR_PATH pointing at
-# data/LasHeR_train_single (a one-line trainingsetList.txt); see
-# scripts/codetrack_train_smoke.sh.
-name: "CodeTrack/B-224 smoke"
+#
+# Batch: 8 x 16 = 128, matching the upstream GOLA recipe.  Measured peak at micro_batch=8 is
+# 4.40 GiB of 23.5 GiB, so accumulation is what reaches the upstream batch size without OOM.
+name: "CodeTrack/B-224 full"
 
 logging:
   category: "CodeTrack"
-  tags: ["DINOv2", "base", "224", "GOLA", "CodeTrack", "smoke"]
+  tags: ["DINOv2", "base", "224", "GOLA", "CodeTrack", "full"]
 
 type: "GOLA"
 
@@ -44,7 +45,7 @@ model:
 run:
   type: "default"
 
-  num_epochs: 1
+  num_epochs: 10
 
   efficiency_assessment:
     enabled: false
@@ -69,16 +70,16 @@ run:
 
   data:
     train:
-      global_batch_size: 2
+      global_batch_size: 8
       num_io_threads: 0
-      num_workers: 2
+      num_workers: 4
       type: "siamese_tracker_train"
       source:
         type: "dataset"
         parameters: !include "../../_dataset/train-lasher.yaml"
       sampler:
         type: "random"
-        samples_per_epoch: 6
+        samples_per_epoch: 131072
         seed: 42
         weight:
           - match:
@@ -132,18 +133,39 @@ run:
           lr: 1.e-4
           weight_decay: 0.1
           fused: false
-          # See config/GOLA/codetrack_full/config.yaml for why the grouping rules must come
-          # first: `zero_1d_param_weight_decay` removes every 1-d parameter from the pool while
-          # carrying no lr, so leaving it first sends biases/norms to AdamW's default 1e-3.
+          # Grouped learning rates.  The framework applies the FIRST matching rule and only
+          # assigns an lr when the rule carries one, so `zero_1d_param_weight_decay` (no lr)
+          # stays first and the groups follow.
+          #
+          # Rationale for the ordering: GOLA is an already-converged checkpoint, so its
+          # parameters must move less than the randomly-initialised CodeTrack modules.
+          # Measured over 20 steps: LoRA at 2.5e-5 reached loss 2.395 against 4.817 at 1e-4,
+          # while neither diverged -- so this is a quality knob, not a stability one.
+          # ORDER MATTERS.  Each rule *removes* the parameters it matches from the pool, and
+          # `zero_1d_param_weight_decay` carries no `lr` at all.  Leaving it first (as upstream
+          # does) therefore pops every bias / norm / gamma out of the pool *before* the groups
+          # run, so those tensors end up with no lr of their own and AdamW falls back to its
+          # default 1e-3 -- ten times the intended 1e-4.  Measured groups with the grouping
+          # rules first and `zero_1d_param_weight_decay` last:
+          #   codetrack.motion/memory  18 tensors  lr 1e-4
+          #   other codetrack          79 tensors  lr 1e-4
+          #   lora                   1152 tensors  lr 2.5e-5
+          #   head                     12 tensors  lr 1e-5
+          #   token_type_embed          1 tensor   lr 2.5e-5
+          # and the remaining 1-d parameters are collected by the final rule with wd=0.
           per_parameter:
-            - name_regex: "codetrack\\."
-              lr: 2.e-4
+            - name_regex: "codetrack\\.(motion|memory)\\."
+              lr: 1.e-4
+            - name_regex: "codetrack\\.(diagnosis|refiner|denoiser|H|template_pool|template_gate|meanvar|condition_proj)\\."
+              lr: 1.e-4
             - name_regex: "lora"
               lr: 2.5e-5
             - name_regex: "^head\\."
               lr: 1.e-5
+            - name_regex: "token_type_embed"
+              lr: 2.5e-5
             - type: "zero_1d_param_weight_decay"
-        grad_accumulation_steps: 1
+        grad_accumulation_steps: 16
         max_grad_norm: 1.0
         zero_grad_set_to_none: true
         lr_scheduler:

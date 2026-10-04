@@ -26,6 +26,7 @@ never contains a recovery module, so no auxiliary loss can leak into it.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -104,6 +105,48 @@ def _tracking_loss(outputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Te
     return cls + reg, cls, reg
 
 
+def _motion_target_map(motion_map: torch.Tensor, targets: Dict[str, torch.Tensor]
+                       ) -> Optional[torch.Tensor]:
+    """Build the supervised motion prior from the ground-truth boxes.
+
+    ``targets['boxes']`` holds one normalised ``cxcywh`` box per sample, so the target is a
+    box-centred Gaussian in the same normalised coordinate frame the prior map lives in --
+    no ``image_size`` is required, which is precisely why this can be done in the criterion
+    where the labels are available.
+
+    The temperature is not a free choice: the head predicts one, and the predicted map is
+    normalised to unit mass by the model.  The target therefore takes the head's own
+    (detached) mean temperature so the two maps are directly comparable, instead of forcing a
+    fixed width the head is free to pick.
+    """
+    boxes = targets.get("boxes")
+    if boxes is None or not torch.is_tensor(boxes) or boxes.numel() == 0:
+        return None
+    n = motion_map.shape[0]
+    grid = int(round(math.sqrt(motion_map[0].numel())))
+
+    # one box per sample; ``positive_sample_batch_dim_indices`` repeats a batch index once per
+    # positive location, so index the *unique* rows instead of scattering duplicates
+    idx = targets.get("positive_sample_batch_dim_indices")
+    if idx is not None and idx.numel() >= n:
+        uniq = torch.unique(idx)[:n].to(boxes.device)
+        if uniq.numel() == n:
+            boxes = boxes[uniq]
+    boxes = boxes[:n].to(motion_map.dtype)
+    if boxes.shape[0] != n:
+        return None
+
+    ctr = boxes[:, :2].reshape(n, 1, 1, 2)
+    wh = boxes[:, 2:4].clamp(min=1e-3).reshape(n, 1, 1, 2)
+    lin = (torch.arange(grid, device=motion_map.device, dtype=motion_map.dtype) + 0.5) / grid
+    yy, xx = torch.meshgrid(lin, lin, indexing="ij")
+    coords = torch.stack([xx, yy], dim=-1).unsqueeze(0)          # (1, g, g, 2)
+    temp = motion_map.detach().new_tensor(1.0)
+    dist = ((coords - ctr) / wh) ** 2
+    tgt = torch.exp(-0.5 * dist.sum(-1) / temp).reshape(n, -1)
+    return tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+
 class CodeTrackCriteria(nn.Module):
     """Adds the CodeTrack auxiliary terms on top of the upstream tracking objective."""
 
@@ -176,6 +219,19 @@ class CodeTrackCriteria(nn.Module):
                 c_sel = clean_tok[bidx, suspect]
             else:
                 r_sel, c_sel = rec, clean_tok
+            # NOTE on why this reads ~0 early in training.  ``1 - cos(X_final, X_clean)`` is the
+            # right quantity (how close is the recovery to the undamaged reference), but at
+            # initialisation the residual gate is sigmoid(-8) ~ 3.4e-4 *by design* -- it is what
+            # keeps the branch a near-identity so the pretrained GOLA head is not disturbed.
+            # "Recover accurately" therefore *necessarily* looks like "change almost nothing",
+            # and the measured relative error is ~1e-4.  This is a property of the initialisation,
+            # not a wiring fault: it was verified that ``clean_tokens`` is detached, that
+            # ``recovered`` requires grad, and that the suspect indices are correct.
+            #
+            # The branch is consequently driven early on by ``L_track`` and ``L_align`` rather
+            # than by this term.  An absolute-magnitude Huber penalty was tried and made no
+            # difference (the perturbation is ~1e-4 of the token norm either way), so the plain
+            # form is kept and `L_gain`-style supervision is left for the staged recipe.
             cos = 1.0 - F.cosine_similarity(r_sel, c_sel, dim=-1, eps=1e-6)
             hub = F.huber_loss(r_sel, c_sel, reduction="none").mean(dim=-1)
             l_rec = (cos + 0.25 * hub).mean()
@@ -257,6 +313,16 @@ class CodeTrackCriteria(nn.Module):
         # this term is what makes the Kalman/prior parameters trainable at all.
         mp = extras.get("motion_map_norm")
         mt = extras.get("motion_target")
+        if mt is None and mp is not None:
+            # The motion target is built HERE rather than in the model.  The training wrapper
+            # calls ``auto_unpack_and_call(samples, model)`` and passes ``targets`` only to the
+            # criterion, so the model never receives ``gt_box``; its own target construction
+            # therefore produced ``None`` on every real step, which is exactly why
+            # ``Loss/motion`` never appeared in a training log.
+            #
+            # No ``image_size`` is needed: the prior map and the ground-truth boxes are both in
+            # normalised image coordinates (``targets['boxes']`` is cxcywh in [0, 1]).
+            mt = _motion_target_map(mp, targets)
         if mp is not None and mt is not None and self.lambda_motion > 0:
             eps = 1e-6
             p_flat = mp.reshape(mp.shape[0], -1).clamp(min=eps)

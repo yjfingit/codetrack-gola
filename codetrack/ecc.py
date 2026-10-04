@@ -213,8 +213,12 @@ class SyndromeDiagnosis(nn.Module):
         self.cos_proj = nn.Sequential(
             nn.Linear(1, syndrome_hidden), nn.GELU(), nn.Linear(syndrome_hidden, 1),
         ) if self.use_cos else None
-        # explicit scale on the raw discrepancy, so the head does not have to learn it
-        self.residual_scale = nn.Parameter(torch.tensor(1.0))
+        # explicit scale on the raw discrepancy, so the head does not have to learn it.
+        # NOTE: deliberately shape (1,) rather than a 0-d scalar.  The training framework's
+        # gradient-norm helper calls ``torch.linalg.norm(p.grad, ord=2.0)`` with no ``dim``,
+        # which raises "input must be 1D or 2D. Got 0D" for a 0-d parameter.  Keeping one
+        # dimension avoids that without changing the maths.
+        self.residual_scale = nn.Parameter(torch.ones(1))
         self.check_scale = nn.Parameter(torch.ones(num_checks))
 
         # q = sigmoid(H^T s + b)

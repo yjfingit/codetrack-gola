@@ -268,37 +268,20 @@ class CodeTrack(nn.Module):
         motion_map = motion_out.get("motion_map")
         uncertainty = motion_out.get("uncertainty")
 
-        # Normalised motion prior + its GT-derived target.  This is an *auxiliary*
-        # supervision term, not a shortcut into the head: the zero-initialised recovery
-        # output means the main tracking loss cannot reach the Kalman/prior parameters at
-        # step 0, so without this term they would be dead parameters.  The target is a
-        # unit-mass Gaussian at the ground-truth box centre with the GT box's extents, which
-        # is exactly the quantity ``u_t`` is supposed to modulate.
+        # Normalise the motion prior to unit mass.  The map is consumed both as a log-space
+        # attention bias and as a distribution for the KL term, and normalising here means the
+        # prior head cannot smuggle information through a global scale factor (which the
+        # consumer would cancel anyway).
+        #
+        # The *supervision target* is deliberately NOT built here: the training wrapper passes
+        # ``targets`` only to the criterion, so this branch never has a ground-truth box on a
+        # real step and used to yield ``None`` -- which is why ``Loss/motion`` never appeared.
+        # The criterion builds it instead (``codetrack/criteria.py::_motion_target_map``).
         motion_target = None
         if motion_map is not None:
             pm = motion_map.reshape(b, -1)
             pm = pm / pm.sum(dim=-1, keepdim=True).clamp(min=1e-6)
             motion_map = pm.reshape(b, 1, self.grid, self.grid)
-            if gt_box_xywh is not None and image_size is not None:
-                size = image_size.to(gt_box_xywh.dtype).reshape(b, 2)
-                cxcy = gt_box_xywh[:, :2] / size
-                whn = (gt_box_xywh[:, 2:] / size).clamp(min=1e-3)
-                coords = self.motion._grid_centres(X_t.device, X_t.dtype)
-                ctr = cxcy.unsqueeze(1).unsqueeze(1)
-                wh = whn.unsqueeze(1).unsqueeze(1)
-                dist = ((coords.unsqueeze(0) - ctr) / wh) ** 2
-                # Same functional family as the prediction (box-centred Gaussian), but the
-                # temperature comes from the *detached* mean of what the head predicted.  The
-                # target is supervision, so it must not carry gradient, and using the head's own
-                # mean temperature keeps the two maps comparable instead of forcing a fixed
-                # width the head is free to choose.
-                temp_t = motion_out.get("temperature")
-                temp_t = (temp_t.detach().mean().clamp(0.05, 20.0)
-                          if temp_t is not None else X_t.new_tensor(1.0))
-                tgt = torch.exp(-0.5 * dist.sum(-1) / temp_t)
-                tgt = tgt.reshape(b, -1)
-                motion_target = (tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
-                                 ).reshape(b, 1, self.grid, self.grid)
 
         # ---- block 3: ECC diagnosis ------------------------------------------
         H_bar = self.H.matrix()
