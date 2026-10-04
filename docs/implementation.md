@@ -309,3 +309,68 @@ causal-clip 采样器、`L_gain`/`L_rel`/`L_mem_pred` 三项新损失，均**已
 **已知不可实现项**：训练时 search crop 由 `SiamFCCropping` 基于数据集 GT 框离线裁剪，
 模型无法反向影响裁剪中心，因此"让下一帧 crop 以预测框为中心"在当前架构下做不到，
 只能靠 scheduled sampling 部分缓解 exposure bias。
+
+---
+
+## 13. 全量 LasHeR 训练的准入检查（2026-10-04）
+
+`LasHeR` 训练集共 **979 个序列**。下列每一项都实测过。
+
+### 硬阻塞项：`L_motion` 在真实训练下永远不计算
+
+**根因**（已确认，非猜测）：
+
+```python
+# trackit/runner/training/default/model_wrapper.py
+def forward(self, samples, targets):
+    output = auto_unpack_and_call(samples, self.model)   # 只传 samples
+    output = self.criterion(output, targets)             # targets 只给 criterion
+```
+
+`auto_unpack_and_call(samples, ...)` 把 `samples` 展开成 `**kwargs`。而 `gt_box` 并不在
+`samples` 里 —— 它在 `targets['boxes']`（由 `box_with_score_map_label_collator` 写入，
+归一化 `cxcywh`）：
+
+```python
+collated.target.update({'num_positive_samples': ..., 'boxes': collated_gt_bboxes})
+```
+
+所以模型 forward 收到 `gt_box=None` → `motion_target=None` → criterion 的
+`if mp is not None and mt is not None` 不成立 → **`Loss/motion` 从不出现**。
+这与冒烟日志里看不到该项完全一致。
+
+**修法（已设计，未实现）**：把 `L_motion` 的目标构造从模型侧搬到 **criterion 侧**，
+因为 criterion 能同时看到模型输出与 `targets`：
+
+- `CodeTrack` 返回**未归一化**的 `motion_map`（问题：旧代码在模型内 `pm/pm.sum()` 并写回，
+  若已在模型内归一化，注意别二次归一化）
+- criterion 从 `targets['boxes']`（归一化 `cxcywh`）直接构造 GT 先验图，**无需 `image_size`**
+  （因为先验图定义在归一化图像坐标上，与像素尺寸无关）
+- 在 criterion 里算 KL
+
+### 已就绪
+
+| 项 | 状态 |
+|---|---|
+| LoRA 可训练 | **1296/1296 更新**，主干 0 漂移 |
+| 运动先验因果性 | `tools/causality_check.py` **6/6** |
+| `M_t` 摆脱恒零 | 独立输入下 `L_motion` = 0.214/1.014/0.411/0.152/0.047 |
+| 显存 | micro_batch=8 峰值 **4.40 GiB / 23.5 GiB**；batch 128 需 `accumulation=16` |
+| 数据集 | 979 序列可读 |
+
+### 未就绪
+
+| 项 | 为什么阻塞 |
+|---|---|
+| `L_motion` | 见上，硬阻塞（运动头拿不到监督） |
+| 分组学习率 | 实测有明确收益：20 步后末次 loss **2.395（LoRA 2.5e-5）vs 4.817（LoRA 1e-4）**；两者都不发散，所以这是"跑得好"而非"跑得了" |
+| 全量配置 | 现有配置 `samples_per_epoch=6, global_batch_size=2, num_epochs=1`，是为冒烟而设 |
+| `L_rec` = 0 | 未解决，恢复质量仍无监督 |
+| D4 / D5 | 时序可靠性被压在 0.50–0.73；历史 slot 共享当前帧标签 |
+| causal-clip 采样器 | 未实现 → S3 无法开工 |
+
+### 判断
+
+**当前可以跑通全量训练，但不应该** —— 运行会得到"恢复/诊断分支被训练、运动分支完全没被监督"
+的半成品，浪费算力且结论不可用。**先修 `L_motion` 进 criterion + 建全量配置 + 分组 LR**，
+再去跑 979 序列。
