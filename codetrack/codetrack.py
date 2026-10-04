@@ -125,6 +125,7 @@ class CodeTrack(nn.Module):
             dim=cfg.dim, hidden=cfg.diffusion_hidden, heads=cfg.diffusion_heads,
             steps=cfg.diffusion_steps, num_checks=cfg.num_checks, cond_dim=cfg.dim,
             noise_schedule_power=cfg.noise_schedule_power,
+            write_schedule=getattr(cfg, "diffusion_write_schedule", "ramp"),
             residual_gate_init=cfg.residual_gate_init) if cfg.diffusion_enabled else None
         self.meanvar = MeanVarCompletion(dim=cfg.dim, hidden=cfg.diffusion_hidden)
 
@@ -460,7 +461,7 @@ class CodeTrack(nn.Module):
         return {
             "X_final": X_final,
             "X_rec": X_rec,
-            "q": q, "s": diag["s"], "s_logits": diag["s_logits"],
+            "q": q, "s": diag["s"], "s_logits": diag["s_logits"], "q_logits": diag["q_logits"],
             "C_obs": diag["C_obs"], "C_ref": diag["C_ref"],
             "U": diag["U"], "R": diag["R"], "H_bar": H_bar,
             "suspect_index": suspect, "suspect_score": rec["suspect_score"],

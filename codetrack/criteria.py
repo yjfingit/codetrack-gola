@@ -147,21 +147,70 @@ def _motion_target_map(motion_map: torch.Tensor, targets: Dict[str, torch.Tensor
     return tgt / tgt.sum(dim=-1, keepdim=True).clamp(min=1e-6)
 
 
+def _rank_auroc(scores: torch.Tensor, target: torch.Tensor,
+                thr: float = 0.25) -> Optional[float]:
+    """Rank-based AUROC of ``scores`` against a binarised ``target``, or ``None``.
+
+    The diagnosis claim ("the syndrome localises the damaged tokens") is a *ranking* claim, so
+    AUROC is the metric that can falsify it -- ``L_diag`` can fall while the ranking stays at
+    chance.  Computed as the Mann-Whitney statistic over the batch, using average ranks so ties
+    (very common here: the target is clamped at its bounds) do not bias the result.
+
+    ``thr`` is fixed rather than quantile-based so the number is comparable across batches and
+    can be averaged into an EMA.  It has to sit *inside* the measured target distribution:
+    observed per-token values are ~0.14 for untouched tokens and ~0.22 on damaged ones
+    (``tools/recovery_report.py``), so 0.15 gives a thin but usable split and 0.6 would binarise
+    the extreme tail only.  0.25 is used here and in the reporting tools so all three agree.
+
+    Returns ``None`` when the batch has no usable positive/negative split, e.g. an all-clean
+    draw, so the caller simply does not log the metric instead of logging a meaningless 0.5.
+    """
+    if scores.dim() == 3:
+        scores = scores.reshape(scores.shape[0], -1)
+    if target.dim() == 3:
+        target = target.reshape(target.shape[0], -1)
+    if scores.shape != target.shape or scores.numel() == 0:
+        return None
+    pos, neg = target > thr, target <= thr
+    n_pos, n_neg = int(pos.sum()), int(neg.sum())
+    if n_pos == 0 or n_neg == 0:
+        return None
+
+    flat = scores.reshape(-1)
+    order = torch.argsort(flat)
+    ranks = torch.empty_like(flat)
+    ranks[order] = torch.arange(1, flat.numel() + 1, device=flat.device, dtype=flat.dtype)
+    # average ranks within each group of equal scores
+    _, inverse, counts = torch.unique(flat, return_inverse=True, return_counts=True)
+    sums = torch.zeros_like(counts, dtype=flat.dtype).scatter_add_(0, inverse, ranks)
+    ranks = (sums / counts.to(flat.dtype))[inverse]
+
+    r_pos = float(ranks[pos.reshape(-1)].sum())
+    auroc = (r_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+    return float(auroc)
+
+
 class CodeTrackCriteria(nn.Module):
     """Adds the CodeTrack auxiliary terms on top of the upstream tracking objective."""
 
     def __init__(self, w_track_corr: float = 1.0, w_track_clean: float = 0.25,
                  lambda_diag: float = 0.5, lambda_rec: float = 0.2,
+                 lambda_gain: float = 0.2,
                  lambda_align: float = 0.2, lambda_pres: float = 0.01,
                  lambda_mem: float = 0.1, lambda_gate: float = 0.1,
                  lambda_motion: float = 0.2, lambda_trc: float = 0.1,
                  diagnosis_alpha: float = 0.5,
+                 gain_margin: float = 0.8,
                  cls_name: str = "cls", reg_name: str = "box"):
         super().__init__()
         self.w_track_corr = float(w_track_corr)
         self.w_track_clean = float(w_track_clean)
         self.lambda_diag = float(lambda_diag)
         self.lambda_rec = float(lambda_rec)
+        self.lambda_gain = float(lambda_gain)
+        # ``d_after`` must beat ``gain_margin * d_before``; 0.8 means "reduce the distance to the
+        # clean feature by at least 20% on the tokens you were asked to repair".
+        self.gain_margin = float(gain_margin)
         self.lambda_align = float(lambda_align)
         self.lambda_pres = float(lambda_pres)
         self.lambda_mem = float(lambda_mem)
@@ -171,6 +220,21 @@ class CodeTrackCriteria(nn.Module):
         self.alpha = float(diagnosis_alpha)
         self.cls_name = cls_name
         self.reg_name = reg_name
+
+    # ------------------------------------------------------------------ helpers
+    @staticmethod
+    def _relative_error(x: torch.Tensor, clean: torch.Tensor) -> torch.Tensor:
+        """Per-token ANGULAR distance to the clean reference, (B, N), in ``[0, 1]``.
+
+        ``Loss/rec`` is a cosine term because a corrupted token differs from its clean
+        counterpart mostly in *direction*: the transformer's residual stream and the LayerNorm
+        that follows it keep the token norm roughly constant.  A Euclidean distance therefore
+        reads ~0 change even when the recovery has rotated the token into the wrong (or right)
+        place -- measured live: ``d_before = d_after = 0.7402`` to four decimals while
+        ``Loss/rec`` moved by 0.03 between steps.  The same quantity is used for the target and
+        for the loss so that ``gain `` and ``L_rec`` cannot disagree about what "better" means.
+        """
+        return (1.0 - F.cosine_similarity(x, clean, dim=-1, eps=1e-6)).clamp(0.0, 2.0)
 
     # ------------------------------------------------------------------ forward
     def forward(self, outputs: Dict[str, torch.Tensor],
@@ -199,13 +263,27 @@ class CodeTrackCriteria(nn.Module):
         q = extras.get("q")
         err = extras.get("error_target")
         if q is not None and err is not None:
-            l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), err)
+            # ``*_with_logits`` is mandatory under AMP: plain ``binary_cross_entropy`` on the
+            # sigmoid output raises "unsafe to autocast" mid-run (observed on the first real
+            # training step, which is exactly the kind of failure a preflight exists to catch).
+            q_logits = extras.get("q_logits")
+            if q_logits is not None:
+                l_diag = F.binary_cross_entropy_with_logits(q_logits.float(), err.float())
+            else:
+                l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), err)
             s = extras.get("s")
             s_target = extras.get("syndrome_target")
             if s is not None and s_target is not None:
-                l_diag = l_diag + 0.5 * F.smooth_l1_loss(s, s_target)
+                l_diag = l_diag + 0.5 * F.smooth_l1_loss(s.float(), s_target.float())
             total = total + self.lambda_diag * l_diag
             metrics["Loss/diag"] = float(l_diag.detach())
+            # Reporting only: is the head's ranking of "which token is damaged" better than
+            # chance?  L_diag itself can fall while the ranking stays useless (it is a
+            # per-token calibration loss), and this is the number that tells the two apart.
+            auroc = _rank_auroc(q.detach().float(), err.detach().float(), thr=0.25)
+            if auroc is not None:
+                metrics["Error/q_auroc"] = auroc
+            metrics["Error/q_mean"] = float(q.detach().mean())
 
         # ---- recovery -------------------------------------------------------
         rec = extras.get("recovered")
@@ -229,14 +307,62 @@ class CodeTrackCriteria(nn.Module):
             # ``recovered`` requires grad, and that the suspect indices are correct.
             #
             # The branch is consequently driven early on by ``L_track`` and ``L_align`` rather
-            # than by this term.  An absolute-magnitude Huber penalty was tried and made no
-            # difference (the perturbation is ~1e-4 of the token norm either way), so the plain
-            # form is kept and `L_gain`-style supervision is left for the staged recipe.
+            # than by this term.  A scale-invariant Huber form was tried and made no difference
+            # (the perturbation is ~1e-4 of the token norm either way), so the plain form is kept.
+            # What is NOT kept is silence: ``L_gain`` and the ``Error/*`` statistics below answer
+            # the question this term cannot -- "is the output *better* than the input, or merely
+            # plausible?" -- measured on corrupted tokens only.
             cos = 1.0 - F.cosine_similarity(r_sel, c_sel, dim=-1, eps=1e-6)
             hub = F.huber_loss(r_sel, c_sel, reduction="none").mean(dim=-1)
             l_rec = (cos + 0.25 * hub).mean()
             total = total + self.lambda_rec * l_rec
             metrics["Loss/rec"] = float(l_rec.detach())
+
+        # ---- gain: did the recovery actually improve anything? ----------------
+        # ``L_rec`` above is a *similarity to the reference*, which a branch with a small residual
+        # gate satisfies trivially by changing nothing.  ``L_gain`` is the only term that requires
+        # the recovery to move the damaged tokens TOWARDS the clean feature by more than the
+        # margin, and it is the quantity the ``-8 vs -5`` residual-gate ablation is judged on.
+        #
+        # Everything here is restricted to the tokens the injector actually damaged.  On an
+        # all-clean batch (the majority of every batch) there is no corruption mask and the term
+        # simply does not exist -- mixing ~86% untouched samples into the average would hide the
+        # very signal it exists to expose.
+        x_rec = extras.get("recovered_pre_denoise")
+        cor_mask = extras.get("corruption_mask")
+        if x_rec is not None and clean_tok is not None and cor_mask is not None \
+                and bool(cor_mask.any()):
+            cor = cor_mask.to(torch.bool)
+            # ``X_rec`` (post-refiner) and ``X_final`` (post-denoiser) are both measured against
+            # the same clean reference, so the two distances are comparable sample by sample.
+            # ``_relative_error`` returns per-token angular distances (see its docstring).
+            d_before_map = self._relative_error(x_rec.detach(), clean_tok)
+            d_after_map = self._relative_error(rec, clean_tok)
+            d_before = d_before_map[cor].mean()
+            d_after = d_after_map[cor].mean()
+            l_gain = F.relu(d_after - self.gain_margin * d_before)
+            if self.lambda_gain > 0:
+                total = total + self.lambda_gain * l_gain
+            metrics["Loss/gain"] = float(l_gain.detach())
+            # reporting only -- these are the preflight acceptance numbers
+            metrics["Error/d_before"] = float(d_before.detach())
+            metrics["Error/d_after"] = float(d_after.detach())
+            metrics["Error/gain"] = float((d_before - d_after).detach())
+            metrics["Error/corrupted_fraction"] = float(cor.to(torch.float32).mean())
+            # The task-relevant form of the same question: does the branch shrink the error at
+            # all?  Reported for the tokens that were damaged AND flagged as suspect.
+            if suspect is not None and suspect.numel() > 0:
+                b = rec.shape[0]
+                bidx = torch.arange(b, device=rec.device)[:, None].expand_as(suspect)
+                sel = torch.zeros_like(cor)
+                sel[bidx, suspect] = True
+                sel = sel & cor
+                if bool(sel.any()):
+                    db_s = d_before_map[sel].mean()
+                    da_s = d_after_map[sel].mean()
+                    metrics["Error/d_before_suspect"] = float(db_s.detach())
+                    metrics["Error/d_after_suspect"] = float(da_s.detach())
+                    metrics["Error/gain_suspect"] = float((db_s - da_s).detach())
 
         # ---- alignment (mean / var completion) ------------------------------
         mv = extras.get("meanvar")

@@ -15,7 +15,7 @@
 #
 # Batch: 8 x 16 = 128, matching the upstream GOLA recipe.  Measured peak at micro_batch=8 is
 # 4.40 GiB of 23.5 GiB, so accumulation is what reaches the upstream batch size without OOM.
-name: "CodeTrack/B-224 S2 spatial joint"
+name: "CodeTrack/preflight (300-500 updates)"
 
 logging:
   category: "CodeTrack"
@@ -53,7 +53,7 @@ model:
 run:
   type: "default"
 
-  num_epochs: 10
+  num_epochs: 10   # preflight: run ~500 updates then stop by hand
 
   efficiency_assessment:
     enabled: false
@@ -87,7 +87,7 @@ run:
         parameters: !include "../../_dataset/train-lasher.yaml"
       sampler:
         type: "random"
-        samples_per_epoch: 131072
+        samples_per_epoch: 65536
         seed: 42
         weight:
           - match:

@@ -16,7 +16,9 @@ def _apply_per_parameter_adjustment_rules_(base_lr: float, base_weight_decay: Op
         elif per_parameter_rule['type'] == 'vit_lr_layer_decay':
             apply_vit_lr_layer_decay_(per_parameter_rule, base_lr, base_weight_decay, remaining_module_parameters, optimizer_param_dict, decay_parameter_names)
         elif per_parameter_rule['type'] == 'zero_1d_param_weight_decay':
-            apply_zero_1d_param_weight_decay_rule_(per_parameter_rule, remaining_module_parameters, optimizer_param_dict, decay_parameter_names)
+            apply_zero_1d_param_weight_decay_rule_(per_parameter_rule, base_lr, base_weight_decay,
+                                                   remaining_module_parameters, optimizer_param_dict,
+                                                   decay_parameter_names)
         else:
             raise NotImplementedError(f"per_parameter_rule type {per_parameter_rule['type']} not implemented")
 

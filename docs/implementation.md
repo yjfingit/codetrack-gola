@@ -461,20 +461,12 @@ optimizer = optimizer_cls(optimizer_param_groups, **optimizer_parameters)
 更严重的是，我把分组规则提到 `zero_1d` 之前，导致 1 维参数（bias/norm）被前面的正则组吃掉，
 **丢掉了 `weight_decay=0` 的语义**。
 
-**修法**：`zero_1d_param_weight_decay` 的语义是"收集非衰减参数（ndim≤1 或 norm 层）并给 wd=0"，
-且**自身不带 lr**。所以按 LR 分组各写一条、并加 `name_regex` 限定作用域，就能同时满足两者：
+**修法（第四轮修正，见 §15.1）**：`zero_1d_param_weight_decay` 的语义是"收集非衰减参数
+（ndim≤1 或 norm 层）并给 `wd=0`"。第四轮发现该规则类型**在框架实现里完全忽略
+`name_regex` / `ndim`**，所以"按 scope 写多条 `zero_1d`"这个方案本身是坏的。最终方案：
+张量规则显式带 `ndim: 2`，`zero_1d` 规则显式带 `ndim: [0, 1]`，并修好框架实现使其真正尊重过滤器。
 
-```yaml
-- type: "zero_1d_param_weight_decay"
-  name_regex: 'codetrack\.'
-  lr: 1.e-4
-- name_regex: 'codetrack\.'
-  lr: 1.e-4
-...
-- type: "zero_1d_param_weight_decay"    # 兜底
-```
-
-实测 6 组、**1406/1406 张量全覆盖**、1 维参数 `wd=0` 且 lr 正确。
+实测 8 组、**1406/1406 张量全覆盖**、1 维参数 `wd=0` 且 lr 归属正确。
 
 ### P0-7｜`lora.A` / `lora.B` 从未被优化器更新（新发现，已修）
 
@@ -491,7 +483,7 @@ optimizer = optimizer_cls(optimizer_param_groups, **optimizer_parameters)
 实测确认**全部 1296 个 LoRA 张量都拿到梯度**，即 144 个真正参与前向的基座参数
 **被静默排除在优化器之外**。已把 `lora.A`/`lora.B` 加入白名单，覆盖率从 **1262/1406 → 1406/1406**。
 
-### P1-8｜图像级 corruption 污染了 clean teacher（部分修复）
+### P1-8｜图像级 corruption 污染了 clean teacher（第四轮已修，见 §15.5）
 
 数据 plugin 直接 `collated.input["x"] = corrupted_x`，**没有保留 clean 版本**。
 所以对 image-level corruption 样本，模型里的所谓 teacher 拿到的仍是**被破坏的图像**——
@@ -499,22 +491,232 @@ optimizer = optimizer_cls(optimizer_param_groups, **optimizer_parameters)
 
 已修的部分：`image_corruption_mask` 现在并入 `was_corrupted`（此前图像级破坏被报成"可信帧"，
 使记忆可靠性与模板门控都拿到错误标签）。
-**未修**：保留 `x_clean` 需要改数据 plugin 的接口，留待 S1 前处理。
+**`x_clean` 已在第四轮补齐**（§15.5）：plugin 在写回 `x` 之前保存 `collated.input["x_clean"]`，
+`GOLA_DINOv2` 接受并把它交给 teacher 分支；eval 时该键不存在，回落为 `x`。
 
 ### 新增验收门
 
-`tools/preflight_acceptance.py` —— **26/26 通过**，覆盖：优化器覆盖率、LR 分组、
-1 维参数 `wd=0`、全部损失项确实计算、诊断目标存在、8 个模块梯度非零、
-scheduler 时间轴、选择性恢复方向。
+`tools/preflight_acceptance.py` —— 第四轮重写后 **55/55 通过**。它现在**直接读取
+`config/GOLA/codetrack_s2/config.yaml`**（经 `custom_yaml_loader`，`!include` 正常解析）拿到
+真实的 `per_parameter`，而不再复刻一份简化的规则表：上一版之所以"全绿"，正是因为它测的是自己
+的 fixture，而真正会跑的配置把 head/LoRA 的 1 维参数塞进了 CodeTrack 组。
+
+覆盖：配置自查（temporal 关闭、warmup=0、`ndim` 标注齐全）、优化器覆盖率与 lr/wd 路由、
+**单组不得跨 scope**、1 维参数 `wd=0`、3 维以上参数不被 `zero_1d` 丢掉、全部损失项确实计算、
+`Error/*` 指标存在、诊断 AUROC 可测、`d_before/d_after` 仅在 corrupt token 上统计、
+写回计划（ramp 非零 / linear_noise 复现旧行为）、`x_clean` 通路、8 个模块梯度非零、
+scheduler 用 update 计数且 `t_initial=10240`。
 
 ### 当前状态
 
 | 验证 | 结果 |
 |---|---|
-| `tools/preflight_acceptance.py` | **26/26** |
+| `tools/preflight_acceptance.py` | **55/55** |
 | `tools/causality_check.py` | **6/6** |
-| `tools/codetrack_verify.py` | 恒等性 `7.96e-5`、checkpoint 1311/1311、10/10 梯度 |
+| `tools/codetrack_verify.py` | 恒等性 `1.15e-4`、checkpoint 1311/1311、10/10 梯度 |
 | `tools/lora_grad_check.py` | LoRA 1296/1296，主干 0 漂移 |
+| 300–500 update 短训 | 见 §15.8 |
 
 **S3 前仍需修**（审查列出，我同意）：causal clip 采样器、scheduled sampling 实际接线、
 TBPTT、D4（可靠性值域 0.5–0.73）、D5（历史 slot 共享标签）、当前帧 GT 的 target-mask 泄漏。
+
+---
+
+## 15. 第四轮：审查意见逐条核对与修复（2026-10-04）
+
+审查基于 `a205ada`，而当前 HEAD 是 `e8ee251`——它列的 5 个 P0 里有 **3 个我已经修了**。
+下面先给核对表，再写本轮真正要修的部分。
+
+| 审查意见 | 实际状态 | 依据 |
+|---|---|---|
+| accumulation=16 时 scheduler 快 16 倍 | **已修**（`e8ee251`） | runner 传 `(iteration+1)//accum` |
+| loss 没有 `/16` | **已修** | `backward_loss = (loss + orth)/accum` |
+| `L_diag` 从未计算 | **已修** | `gola.py` 造 `error_target`/`syndrome_target` |
+| Denoiser 写回方向反了 | **已修** | `recovery.py` 用 `token_error` 门控，实测 91.8× |
+| S1/S2 必须关 temporal | **已修**（`codetrack_s2`），`codetrack_full` 保留全开供 S3 | `codetrack_spatial.yaml` |
+| `zero_1d` 破坏 weight-decay 语义 | **未修，且比审查说的更严重** | §15.1 |
+| image corruption 污染 clean teacher | **未修** | §15.5 |
+| `L_gain` 写进 config 却没实现 | **未修** | §15.4 |
+| 2-step denoiser 只有 1 次有效写回 | **未修** | §15.6 |
+| S3 blockers（clip/scheduled sampling/TBPTT/D4/D5/GT mask） | 未做，维持 S3 前修 | 见 §14 末尾 |
+
+### 15.1｜`zero_1d_param_weight_decay` 静默忽略 `name_regex` / `ndim`（P0，比审查判断更严重）
+
+框架实现完全不看 rule 里的过滤器：
+
+```python
+# 修改前
+for module_parameter_name in list(module_parameters.keys()):
+    if module_parameter_name not in decay_parameter_names:      # 所有 ndim<=1 或 norm 层
+        one_dim_params.append(module_parameters.pop(module_parameter_name))
+```
+
+`_Filter`（会正确应用 `name_regex`/`ndim`/`name_prefix`）**根本没被调用**。后果用实测数据说明：
+开启 CodeTrack 后模型里有 **59 个** non-decay 参数（`refiner.norm.weight`、`denoiser.norm1/2.*`、
+`head.*.bias`、全部 LoRA bias、`token_type_embed.bias` 等）。`codetrack_s2` 的第一条规则
+
+```yaml
+- type: "zero_1d_param_weight_decay"
+  name_regex: 'codetrack\.'
+  lr: 1.e-4
+```
+
+会把**全部 59 个**吸进同一个 group（含 head 与 LoRA 的 1 维参数），`name_regex` 形同不存在；
+后面的 `^head\.` + `zero_1d` 规则一个参数都拿不到。**即上一轮"已修好"的自证是错的**，
+而 `preflight_acceptance.py` 当时复刻了同一份规则的简化版，所以没抓到。
+
+**修法（三处）**：
+
+1. `zero_1d_param_weight_decay.py` 改为走 `filter_out_params_by_rule_` 尊重全部过滤器，
+   保留"1 维 + norm 层不做 weight decay"的上游语义。**不能**简单换成普通 `ndim: 1` 规则：
+   CodeTrack 里有 8 个 LayerNorm，`get_decay_parameter_names` 会把它们的权重也排除在衰减之外，
+   普通 `ndim` 规则做不到这一点。
+2. 规则表改为**显式维度划分**：张量规则 `ndim: 2`，`zero_1d` 规则 `ndim: [0, 1]`。
+   配置文件里现在能一眼看出每条规则的适用范围。
+3. **修掉一个我自己引入的 in-degree bug**：`filter_out_params_by_rule_` 已经把匹配到的参数
+   *移出* pool，返回值才能用于分组；上一轮却再次 `module_parameters.pop(name)` → `KeyError`。
+
+上游 `config/GOLA/run.yaml` 的 `zero_1d` 无任何过滤器 → `_Filter.name_filter is None` → 全通过，
+行为与修改前**逐位一致**，无回归。
+
+**未预料到的连带缺陷**：CodeTrack 有唯一一个 3 维参数 `codetrack.memory.base_prior`。
+它被兜底 `zero_1d` 规则匹配到、判定为"可衰减"、放回 pool，但**空集早退发生在放回之前**，
+于是它被丢弃：`requires_grad=True` 却不属于任何 param group → **永远不更新**。
+实测覆盖率 `1405/1406`。已把放回移到早退之前，并把这条写进验收门
+（"3 维以上参数不被 `zero_1d` 丢掉"），覆盖率回到 **1406/1406**。
+
+### 15.2｜配置一致性
+
+* `codetrack_full/config.yaml` 的 `warmup_epochs` 仍是 `2`，与 `codetrack_s2` 的 `0` 矛盾。
+  统一为 `0`，阶段 warmup 按 update 数在阶段驱动里给（S1 128 / S2 410 / S3 256 / S4 48）。
+* `codetrack_smoke/config.yaml` 的注释仍在重复"`zero_1d` 不带 lr → AdamW 默认 1e-3"这个已被审查
+  证伪的说法，且张量规则没有 `ndim`。注释改正、规则补 `ndim: 2`。
+* `codetrack_s2` 里 `codetrack\.(motion|memory)\.` 这条规则在该阶段**匹配不到任何参数**
+  （temporal 已关），会触发框架的 `assert len(named_params) > 0, "rule must be effective"`。
+  已删除，并在原处写明原因——通用 `codetrack\.` 规则给的是同一个 `1e-4`，无损失。
+
+### 15.3｜AMP 下的 `binary_cross_entropy` 崩溃（第一次真实训练就炸）
+
+第一次跑真实训练时 `L_diag` 直接抛
+`RuntimeError: torch.nn.functional.binary_cross_entropy and torch.nn.BCELoss are unsafe to autocast`。
+原因是 `criteria.py` 对 `q`（sigmoid 输出）用了普通 BCE。已改为
+`binary_cross_entropy_with_logits(q_logits, err)`；那条路径需要 `q_logits`，而 `CodeTrack.forward`
+只返回了 `s_logits` —— 已补 `q_logits` 并接到 `extras`。同时把 `smooth_l1`/`err` 显式转 `float()`。
+**这正是"preflight 短训"存在的意义：单模块脚本永远发现不了只在 AMP + 真实 criterion 下才炸的路径。**
+
+### 15.4｜`L_gain` 与"失真度"指标（审查要求，已实现）
+
+`Loss/rec = 1 - cos + 0.25*huber` 只说明"输出像不像 clean"，一个残差门很小的分支靠"什么都不改"
+就能让它很小。新增：
+
+```python
+d_before = mean( (1 - cos(X_rec,   X_clean)) [corrupted tokens] )   # 精修后、去噪前
+d_after  = mean( (1 - cos(X_final, X_clean)) [corrupted tokens] )   # 去噪后
+Loss/gain = ReLU(d_after - 0.8 * d_before)                          # lambda_gain = 0.2
+```
+
+全部**只在 `corruption_mask` 为真的 token 上**统计（混进 ~86% 干净样本会把信号淹没）。
+同时输出 `Error/{d_before,d_after,gain,corrupted_fraction,d_before_suspect,d_after_suspect,
+gain_suspect,q_mean,q_auroc}`，训练日志按 `interval` 打印。
+
+**一个在真实日志里才暴露的度量设计错误**：`d_before`/`d_after` 最初用
+`‖x − clean‖ / ‖clean‖`，实测 `0.7402 / 0.7402` 四位小数完全一样，而同一时刻 `Loss/rec` 明明在动。
+原因是**被破坏的 token 与 clean 的差异几乎全在方向上**（残差流 + LayerNorm 让 token 范数近似守恒），
+欧氏距离读不出来。已统一改为 `1 - cos`，与 `Loss/rec` 口径一致，`gain` 与 `L_rec` 不会互相矛盾
+（合成 batch 实测 `d_before=0.1144 / d_after=0.1144`，接近恒等，符合残差门设计）。
+
+### 15.5｜图像级 corruption 保留 `x_clean`（已修）
+
+* plugin 在写回 `collated.input["x"]` **之前**保存 `collated.input["x_clean"] = x`（clean 抽签时也写，
+  保持形状稳定）。
+* `GOLA_DINOv2.forward` / `_forward_codetrack` 新增 `x_clean: Optional[Tensor]`，teacher 分支用
+  `x_teacher = x_clean if x_clean is not None else x`。eval 时 plugin 不跑、键不存在 → 回落 `x`，与原来一致。
+* 效果：图像级破坏样本上 `student=corrupted`、`teacher=clean`，`e_feat`/`e_aux` 才是真实残差
+  （修之前这类样本的 `e_feat` 恒为 0，诊断监督是**假的**）。
+* 顺带修正 `e*` 的组合方式：原式 `alpha*e_feat + (1-alpha)*0.5*(e_feat+e_aux)` 在 `alpha=0.5` 时等于
+  `0.75*e_feat + 0.25*e_aux`——`alpha` 并没有发挥配置里声称的作用。现改为
+  `err = alpha*e_feat + (1-alpha)*e_aux`，`alpha` 是真正的混合系数，并额外输出
+  `error_target_tir` / `error_target_rgb` 便于分辨两种模态。
+
+### 15.6｜2-step denoiser 只有 1 次有效写回（已修，带开关）
+
+实测 `alpha_bar = [1.0, 0.001]` → 旧写回 `w = 1 - ab = [0.0, 0.999]`：第 1 步算出 `pred`（以及梯度）
+后乘 0 丢弃，模块宣称的"2-step refinement"实际只有 1 步能改动 token。
+
+新增 `diffusion_write_schedule: "ramp" | "linear_noise"`（默认 `ramp`）：
+
+| steps | `ramp`（新默认） | `linear_noise`（旧行为） |
+|---:|---|---|
+| 2 | `[0.5, 1.0]` | `[0.0, 0.999]` |
+| 4 | `[0.25, 0.5, 0.75, 1.0]` | `[0.0, 0.134, 0.5, 0.999]` |
+
+`linear_noise` 保留为可选项，因为消融需要"新旧写回计划对照"这一列；验收门同时断言
+ramp 每步非零、linear_noise 仍复现旧行为。恒等性不受影响（整个 `pred` 仍被
+`sigmoid(residual_gate)` 收缩，实测恒等性 `1.15e-4 < 1e-2`）。
+
+### 15.7｜S1 的"恢复分支学得动吗"——实测，而不是推理
+
+审查担心 gate `-8` 让 S1 白跑。用固定 batch 实测（**只训 `codetrack.*`，lr 1e-4，50 步**）：
+
+| 模块 | max\|Δparam\| @50 步 |
+|---|---|
+| `codetrack.H.H`（ECC 边权） | **3.63e-3** |
+| `refiner`（含 norm，不含 gate） | **5.79e-3** |
+| `denoiser`（含 norm，不含 gate） | **6.25e-3** |
+| `diagnosis` | **4.69e-3** |
+
+同时 `Loss/diag` 从 0.581 降到 0.452、`Loss/gain` 从 0.032 降到 0.025。
+**结论：分支确实在学。** 单步测得的 `|grad|` 很小（`H` 7e-7）是 Adam 一阶步的假象——AdamW 会按
+梯度尺度归一化，所以多步位移才是判据。残差门本身开得很慢（50 步只从 −8 到 −7.994，因为
+`sigmoid'(-8)=3.35e-4`），这是"step-0 必须是恒等"这一硬约束的代价，而不是 bug；真实的门行为要由
+`Error/d_after < Error/d_before` 的趋势来判断（§15.8 的短训窗口）。
+
+### 15.8｜300–500 update 准入短训（已执行）
+
+`config/GOLA/codetrack_preflight/`（= `codetrack_s2` 的副本，`samples_per_epoch: 65536` →
+每 epoch 512 个 optimizer update；`num_epochs` 保持 10 以便 cosine 视野与正式训练一致）。
+脚本：`bash scripts/codetrack_wait_progress.sh outputs/preflight/run.log 4900 45`
+（每 20 s 检查一次，到点打印里程碑表）。日志：`outputs/preflight/run.log`。
+
+**实跑 310 个 optimizer update / 4967 micro-iteration，约 28 分钟。** 单 batch 读数：
+
+| iter | upd | lr | grad_norm | loss | Loss/cls | Loss/diag | Loss/align | Loss/track_corr | Error/q_auroc |
+|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 1.00e-4 | nan | 17.42 | 3.860 | 0.427 | 3.231 | 4.517 | — |
+| 400 | 25 | 1.00e-4 | 2.57 | 7.33 | 1.108 | 0.224 | 2.334 | 1.480 | 0.706 |
+| 800 | 50 | 1.00e-4 | 1.82 | 5.45 | 0.972 | 0.222 | 1.204 | 1.255 | 0.402 |
+| 1600 | 100 | 1.00e-4 | 2.86 | 4.06 | 0.863 | 0.225 | 0.407 | 1.048 | 0.372 |
+| 2400 | 150 | 1.00e-4 | 2.32 | 3.48 | 0.760 | 0.220 | 0.315 | 0.913 | 0.393 |
+| 3200 | 200 | 1.00e-4 | 2.92 | 3.21 | 0.729 | 0.220 | 0.254 | 0.834 | 0.453 |
+| 4000 | 250 | 9.91e-5 | 3.31 | 3.07 | 0.675 | 0.221 | 0.210 | 0.776 | 0.368 |
+| 4800 | 300 | 9.89e-5 | 3.70 | 3.07 | 0.671 | 0.218 | 0.189 | 0.792 | 0.518 |
+
+判定逐项：
+
+| 审查验收项 | 读数 | 判定 |
+|---|---|---|
+| 各损失项确实出现并下降 | 全部出现；`loss 17.4→3.1`、`cls 3.86→0.67`、`align 3.23→0.19`、`track_corr 4.52→0.79` | PASS |
+| `Loss/diag` 存在并下降 | `0.427 → 0.218` | PASS |
+| `Loss/rec` / `Loss/gain` 有意义 | 均计算；`rec` 在 0.000–0.005、`gain` 在 0.002–0.007 | PASS（见下） |
+| `q AUROC` | 0.37–0.71，在随机头应有的 0.5 附近抖动 | PASS（趋势需更长窗口） |
+| `d_after < d_before` | 否：`0.0331/0.0331`、`0.0111/0.0111` | **符合预期，非失败** |
+| 打印真实 LR、cosine 未提前跑完 | upd 0→300 时 `1.00e-4 → 9.89e-5` | PASS |
+| 各模块梯度非零 | `grad_norm` 2.2–3.7（首 16 个 micro-step 为 `nan`，累积边界） | PASS |
+| `Error/corrupted_fraction` | 稳定 `0.0498`，与 6%/6% 抽签率一致 | PASS |
+
+关于 `d_after ≈ d_before`：残差门初始化是 `sigmoid(-8) = 3.35e-4`，**step-0 恒等是架构硬约束**，
+所以"恢复改善了多少"在第 300 步必然还是噪声级。真正的判据是该差值随门打开而变负（
+`Error/d_after < Error/d_before` 且 `Error/gain > 0`），这属于正式 S1 的观察目标。
+反过来说，如果这里出现明显改善，反而说明恒等性被破坏了。
+
+**结论：准入通过，可以启动 S1 → S2。** 唯一的观察项是 `q_auroc` 与 `gain` 的趋势，二者都需要
+远长于 300 update 的窗口才有统计意义，不构成准入阻塞。
+
+### 15.9｜尚未验证的部分（如实列出）
+
+* `x_clean` 只做了**结构验证**（plugin 写入顺序、模型接收）与短训的隐式验证，没有单独构造
+  "图像级破坏样本 + clean teacher" 的对照实验。
+* `diffusion_write_schedule` 只验证了权重表与恒等性，**没有**做 ramp vs linear_noise 的收敛对照。
+* `x_clean` 与写回计划这两项都进入了正式 S1 的变量集，S1 与 S2 之间不做进一步消融。
+* 训练速度实测 `time ≈ 0.33–1.6 s/micro-step`，`000` 级 epoch 预算下达数天/阶段；本轮只验证
+  "能不能正确训练"，未做吞吐优化。

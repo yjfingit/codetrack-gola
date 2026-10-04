@@ -84,6 +84,18 @@ class CodeTrackConfig:
     noise_strong_prob: float = 0.5
     # cosine noise schedule coefficient: alpha_bar_t = cos(pi/2 * (t/T)^u)
     noise_schedule_power: float = 1.0
+    # How strongly each step's prediction is written back:
+    #   "ramp"         w_t = (t + 1) / T                -> every step contributes, later ones more
+    #   "linear_noise" w_t = 1 - alpha_bar_t            -> the old behaviour, w_0 == 0
+    #
+    # "linear_noise" is kept as an option because it is what the previous revision used, but it
+    # wastes the first step: with the cosine buffer at T=2 the weights are
+    # ``[1 - cos(0), 1 - cos(pi/2)] = [0.0, 0.999]``, so step 0 computes a prediction (and its
+    # gradients) and then multiplies it by zero.  The module was advertised as "2-step
+    # refinement" while only one step could move a token.  ``ramp`` gives [0.5, 1.0] at T=2.
+    # Identity at initialisation is unaffected either way: the whole prediction is still scaled
+    # by ``sigmoid(residual_gate)``.
+    diffusion_write_schedule: str = "ramp"
     # keep the input alive: the correction is a gated residual, never a rewrite
     residual_clip: float = 0.0            # 0 = unbounded
 

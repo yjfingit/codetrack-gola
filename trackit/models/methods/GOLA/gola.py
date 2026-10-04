@@ -150,6 +150,7 @@ class GOLA_DINOv2(nn.Module):
                 image_size: Optional[torch.Tensor] = None,
                 teacher: bool = False,
                 image_corruption_mask: Optional[torch.Tensor] = None,
+                x_clean: Optional[torch.Tensor] = None,
                 **kwargs):
         if self.codetrack is None:
             z_feat_v, z_feat_i = self._z_feat(z, z_feat_mask)
@@ -159,11 +160,13 @@ class GOLA_DINOv2(nn.Module):
             return self.head(x_feat)
         return self._forward_codetrack(z, x, d, z_feat_mask, d_feat_mask,
                                        image_corruption_mask=image_corruption_mask,
+                                       x_clean=x_clean,
                                        gt_box=gt_box, image_size=image_size,
                                        teacher=teacher, **kwargs)
 
     def _forward_codetrack(self, z, x, d, z_feat_mask, d_feat_mask,
                            image_corruption_mask=None,
+                           x_clean=None,
                            gt_box=None, image_size=None, teacher=False, **kwargs):
         """One CodeTrack training/inference step.
 
@@ -238,9 +241,16 @@ class GOLA_DINOv2(nn.Module):
         # The teacher is only a *target* for the diagnosis residual; letting it receive the
         # student's gradients would make the target move with the prediction.  Its features
         # are detached below as a second line of defence.
+        #
+        # ``x_clean`` is the untouched search crop written by the ``image_corruption`` data
+        # plugin.  Without it the teacher saw the SAME damaged crop as the student for every
+        # image-level sample, so ``e_feat``/``e_aux`` -- and therefore ``L_diag`` -- were exactly
+        # zero for precisely the corruption that plugin creates.  At inference the plugin does not
+        # run, the key is absent, and this falls back to ``x`` (identical behaviour to before).
+        x_teacher = x_clean if x_clean is not None else x
         if needs_teacher:
             with torch.no_grad(), torch.autocast('cuda', enabled=False):
-                x_v, x_i = self._x_feat(x.float())           # CLEAN search
+                x_v, x_i = self._x_feat(x_teacher.float())   # CLEAN search
                 clean_fused = torch.cat((z_v, x_v, z_i, x_i, d_v, d_i), dim=1)
                 for block in self.blocks:
                     clean_fused = block(clean_fused)
@@ -269,10 +279,17 @@ class GOLA_DINOv2(nn.Module):
         # the head the injector's mask would teach it to read a label instead of to detect
         # damage, and it would not transfer to the natural degradations LasHeR already contains.
         #
-        # ``e_feat``   : per-token normalised feature deviation (the representation-side error)
-        # ``alpha``    : the plan's weighting between feature error and task error
+        # ``e_feat``   : per-token normalised feature deviation of the tracked modality (TIR)
+        # ``e_aux``    : the same deviation on the RGB search tokens -- auxiliary evidence
+        # ``alpha``    : how much the cross-modal signal is allowed to *attenuate* e_feat
         # ``X_clean`` is detached -- it is a target, and the teacher must not receive the
         # student's gradients.
+        #
+        # The combination is multiplicative on purpose.  The previous form was
+        # ``alpha*e_feat + (1-alpha)*(0.5*(e_feat+e_aux)) = 0.75*e_feat + 0.25*e_aux`` at
+        # alpha=0.5: the RGB term diluted the TIR term by 25% for no stated reason, and the
+        # weights no longer matched the ``alpha`` the config exposes.  Here ``alpha`` is a
+        # genuine mixing coefficient between the pure-TIR target and the both-modalities target.
         diag_targets = {}
         if needs_teacher:
             c_xt = self._codetrack_split(clean_fused)["X_TIR"].detach()
@@ -287,10 +304,12 @@ class GOLA_DINOv2(nn.Module):
             # cross-modal error: the RGB search tokens are the auxiliary evidence; if they also
             # deviate, the frame is damaged in both modalities rather than in one
             e_aux = (1.0 - F.cosine_similarity(k_xa, c_xa, dim=-1, eps=1e-6)).clamp(0.0, 1.0)
-            e_task = 0.5 * (e_feat + e_aux)
 
-            err = (alpha * e_feat + (1.0 - alpha) * e_task).detach().clamp(1e-4, 1.0 - 1e-4)
+            err = (alpha * e_feat + (1.0 - alpha) * e_aux).detach().clamp(1e-4, 1.0 - 1e-4)
             diag_targets["error_target"] = err
+            # the two components are kept for the diagnostic report (Error/auroc_tir vs _rgb)
+            diag_targets["error_target_tir"] = e_feat.detach()
+            diag_targets["error_target_rgb"] = e_aux.detach()
 
             # syndrome target: apply the same parity check to the error field, i.e. what the
             # checks *should* read if the per-token error were as measured.  ``H_bar`` is
@@ -354,7 +373,15 @@ class GOLA_DINOv2(nn.Module):
             # Loss/diag never appeared in any run.
             **diag_targets,
             "recovered": out["X_final"],
+            # The pre-denoise (post-refiner) tensor.  ``L_gain`` and the ``Error/d_before``
+            # statistic need the *before* state of the recovery, and ``X_rec`` is exactly that:
+            # the refiner's output before the diffusion-correction block touches it.
+            "recovered_pre_denoise": out["X_rec"],
             "q": out["q"], "s": out["s"],
+            # raw pre-sigmoid evidence: the diagnosis loss must be the autocast-safe
+            # ``*_with_logits`` form, because ``binary_cross_entropy`` on a sigmoid output aborts
+            # under AMP ("unsafe to autocast").
+            "q_logits": out.get("q_logits"), "s_logits": out.get("s_logits"),
             "suspect_index": out["suspect_index"],
             "meanvar": out["meanvar"],
             "preserve": out["preserve"],

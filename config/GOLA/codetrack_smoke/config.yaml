@@ -132,15 +132,20 @@ run:
           lr: 1.e-4
           weight_decay: 0.1
           fused: false
-          # See config/GOLA/codetrack_full/config.yaml for why the grouping rules must come
-          # first: `zero_1d_param_weight_decay` removes every 1-d parameter from the pool while
-          # carrying no lr, so leaving it first sends biases/norms to AdamW's default 1e-3.
+          # Tensor rules must state ``ndim: 2`` so they cannot also claim a bias, and the
+          # trailing ``zero_1d`` then owns exactly the biases/norms of the whole model with
+          # weight_decay 0 and the base lr (1e-4).  Note it is the BASE lr that a group without
+          # its own ``lr`` inherits -- ``build_optimizer`` passes ``lr`` to the AdamW constructor,
+          # so it is not AdamW's 1e-3 default.  See config/GOLA/codetrack_full/config.yaml.
           per_parameter:
             - name_regex: "codetrack\\."
+              ndim: 2
               lr: 2.e-4
             - name_regex: "lora"
+              ndim: 2
               lr: 2.5e-5
             - name_regex: "^head\\."
+              ndim: 2
               lr: 1.e-5
             - type: "zero_1d_param_weight_decay"
         grad_accumulation_steps: 1
@@ -153,7 +158,8 @@ run:
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
-            warmup_epochs: 2
+            # smoke runs 6 samples total; a 2-epoch warmup would consume the whole run.
+            warmup_epochs: 0
             warmup_lr: 1.e-7
         auto_mixed_precision:
           enabled: true

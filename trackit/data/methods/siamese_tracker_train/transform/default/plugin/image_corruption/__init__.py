@@ -16,6 +16,13 @@ collated batch rather than re-implementing any pixel maths.
 Only the **search region is attacked**.  The template comes from the ground-truth initial
 frame, so corrupting it would poison the reference the diagnosis compares against instead of
 testing the tracker's ability to notice that its *evidence* is bad.
+
+Keys written
+------------
+``x``                      the corrupted search crop (what the student consumes)
+``x_clean``                the untouched search crop (what the clean teacher consumes)
+``image_corruption_mask``  per-sample x per-channel mask of what was damaged
+``image_corruption_kind``  the drawn corruption kind
 """
 
 from typing import Mapping, Sequence
@@ -48,6 +55,17 @@ class ImageCorruptionDataCollector:
         x = collated.input.get(key)
         if not torch.is_tensor(x) or x.dim() != 4:
             return
+
+        # Keep the untouched crop alongside the corrupted one.
+        #
+        # The model's "clean teacher" branch is the target for the diagnosis residual, and it can
+        # only be clean if it is given the *uncorrupted* search region.  Previously this plugin
+        # overwrote ``x`` in place with no copy left behind, so for every image-level sample the
+        # student and the teacher saw the same damaged tensor: ``e_feat = 1 - cos(cor, clean)``
+        # was identically 0, and the dense per-token diagnosis supervision for exactly the
+        # corruption this plugin exists to create was a no-op.  The key is always present (even on
+        # a clean draw) so the model-side branch stays shape-stable.
+        collated.input["x_clean"] = x
 
         kind, modality, sev, apply = self.schedule.draw_image(x.shape[0], x.device)
         if kind is None or not bool(apply.any()):

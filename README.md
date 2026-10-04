@@ -125,27 +125,46 @@ Implemented in `codetrack/`; the only changes to upstream `trackit/` are four ad
 ```bash
 source scripts/00_env.sh                     # required: turbojpeg + CuBLAS determinism
 bash scripts/preflight.sh                    # env / weights / dataset self-check
+"$PYTHON" tools/preflight_acceptance.py      # 55 structural checks against the REAL stage config
 "$PYTHON" tools/codetrack_verify.py          # identity @ step 0, checkpoint, shape audit, gradients
 "$PYTHON" tools/dataflow_audit.py            # instrumented real training step: who talks to whom
 "$PYTHON" tools/complementarity_check.py     # 16 assertions that the modules cannot collapse into each other
+"$PYTHON" tools/causality_check.py           # the current frame's GT must not reach the current output
+"$PYTHON" tools/lora_grad_check.py           # LoRA actually trains, backbone does not drift
+"$PYTHON" tools/recovery_report.py -8 -5     # d_before/d_after/gain/AUROC for the residual-gate ablation
 bash scripts/codetrack_train_smoke.sh        # single-sequence joint training
 bash scripts/codetrack_eval_single.sh        # single-sequence inference (official eval pipeline)
 ```
 
+**Training stages**
+
+```bash
+# S0 (300-500 updates, ~50 min) -- must pass before any long run
+"$PYTHON" main.py GOLA codetrack_preflight --distributed_nproc_per_node 1 --disable_wandb \
+  --weight_path "$WEIGHT" --output_dir="$PWD/outputs/preflight"
+# S1/S2 (spatial, temporal off)  S3/S4 use codetrack_full (temporal on)
+"$PYTHON" main.py GOLA codetrack_s2 --distributed_nproc_per_node 1 --disable_wandb \
+  --weight_path "$WEIGHT" --output_dir="$PWD/outputs/s2"
+```
+
 **Verified state** (details and numbers in `docs/implementation.md`)
 
-- initialisation is a near-identity: `max|dscore_map| = 7.2e-5` vs the loaded GOLA checkpoint
+- initialisation is a near-identity: `max|dscore_map| = 1.15e-4` vs the loaded GOLA checkpoint
 - checkpoint: 1311/1311 keys matched, 0 unexpected
 - all 10 new modules receive a non-zero gradient from the real criterion
-- single-sequence joint training: loss 23.6 -> 22.2, no NaN/Inf, GOLA adapters co-update
+- optimizer owns **1406/1406** trainable tensors, with per-scope lr routing and `wd=0` on every
+  bias/norm; LoRA 1296/1296 moves, frozen backbone drifts by 0
+- 50 real optimizer steps on a fixed batch move `codetrack.H.H` by 3.6e-3 and the refiner/denoiser
+  by ~6e-3, i.e. the recovery branch is trainable even though the residual gate starts at
+  `sigmoid(-8) ~ 3.4e-4`
 
-**Known open items** (full list in `docs/dataflow_audit.md` §5 and `docs/hyperparameters_reference.md` §13)
+**Known open items** (full list in `docs/implementation.md` §15 and `docs/hyperparameters_reference.md` §13)
 
 1. Training uses upstream pair sampling, so the temporal modules never see a real frame
    sequence -- the single most important gap for making Kalman/memory learn. A causal-clip
-   sampler is needed.
-2. `Loss/rec` is measured at exactly 0, i.e. recovery quality is currently unsupervised.
-3. Evaluation panics on `torch.isfinite(score)` for untrained weights, because feeding the
+   sampler is needed (S3), together with scheduled sampling, TBPTT, D4 (TRC reliability range
+   `[0.5, 0.73]`), D5 (per-slot trust labels) and the current-frame GT target-mask leak.
+2. Evaluation panics on `torch.isfinite(score)` for untrained weights, because feeding the
    model's own prediction back as a Kalman observation self-amplifies when the head is random.
 
 

@@ -108,14 +108,50 @@
 | `betas` / `eps` | (0.9,0.999) / 默认 | 上游 | — |
 | `weight_decay` | **0.1** | 上游 | bias/LayerNorm/embed 为 0 |
 | `max_grad_norm` | **1.0** | 上游 | — |
-| scheduler | cosine + 2-epoch warmup | 上游 | `lr_min=1e-6, warmup_lr=1e-7` |
+| scheduler | cosine，**按 optimizer update 计数的分阶段 warmup** | 本仓库 | `lr_min=1e-6, warmup_lr=1e-7, warmup_epochs=0` |
 | AMP dtype | float16 | 上游 | **主干与 head 强制 fp32**（见实现说明） |
-| `num_epochs` | **10** | 上游 | 冒烟用 1 |
+| `num_epochs` | **10** | 上游 | 冒烟用 1；分阶段配方请改用 update 数定义阶段 |
 | `global_batch_size` | **128** | 上游 | 冒烟用 2 |
-| `samples_per_epoch` | **131072** | 上游 | 冒烟用 6 |
+| `samples_per_epoch` | **131072** | 上游 | 冒烟用 6；准入短训 65536 |
 | `num_workers` | 4 | 本机 `consts.yaml` | 上游 6；6 会与另一实验抢 CPU |
 | `max_gaps`（pair sampling） | 100 | 上游 | — |
 | `torch_compile` | 关（冒烟）/ 可开（长训） | — | `disable_torch_compile` mixin |
+
+### warmup：按 update 数，而不是按 epoch
+
+`warmup_epochs: 2` 属于"单阶段 10 epoch"的配方。本仓库是分阶段训练，`samples_per_epoch=131072`
+且 `8×16` 时一个 epoch 只有 1024 个 optimizer update，于是：
+
+| 阶段 | 预算(updates) | 折合 epoch | 建议 warmup(updates) |
+|---|---:|---:|---:|
+| S0 准入短训 | 300–500 | 0.3–0.5 | 0 |
+| S1 spatial recovery | 1500 | 1.46 | 128 |
+| S2 joint PEFT | 8000 | 7.81 | 410 |
+| S3 temporal | 6000 | 5.86 | 256 |
+| S4 mixed | 2000 | 1.95 | 48 |
+
+若沿用 `warmup_epochs: 2`，S1 整个阶段都会停在 warmup 里出不来。因此所有 stage 配置写
+`warmup_epochs: 0`（`warmup_prefix: true` 保留，保证 cosine 从 step 0 起算），warmup 由阶段驱动按
+**update 数**给。注意 scheduler builder 会用 `num_iterations_per_epoch // grad_accumulation_steps`
+换算，所以它自己的 `t_initial` 是 10240（= 10 × 1024）而不是 163840，这也是训练循环必须传
+"optimizer update 计数"而不是 micro-step 的原因。
+
+### 参数组规则必须显式标注维度
+
+```yaml
+per_parameter:
+  - name_regex: 'codetrack\.'
+    ndim: 2              # 张量
+    lr: 1.e-4
+  - type: "zero_1d_param_weight_decay"
+    ndim: [ 0, 1 ]       # bias / norm
+    name_regex: 'codetrack\.'
+    lr: 1.e-4
+  - type: "zero_1d_param_weight_decay"   # 兜底
+```
+
+`zero_1d_param_weight_decay` 会**消耗**它匹配到的参数（从 pool 里移走），所以不标维度会让第一条
+这样的规则把整个模型的 bias/norm 吸进同一个组。详见 `docs/implementation.md` §15.1。
 
 ### 分组学习率 —— **[需决策]，方案文档给的是策略不是数值**
 

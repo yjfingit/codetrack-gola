@@ -165,6 +165,22 @@ def _cosine_noise_schedule(steps: int, power: float = 1.0) -> torch.Tensor:
     return ab.clamp(1e-3, 1.0)
 
 
+def _write_weights(steps: int, schedule: str, alpha_bar: torch.Tensor) -> torch.Tensor:
+    """Per-step weight applied to the predicted correction.
+
+    ``alpha_bar`` runs from 1 (noiseless) to ~0 (mostly noise), so ``1 - alpha_bar`` is nonzero
+    only once the step has actually been noised -- which makes step 0 a guaranteed no-op
+    (``1 - 1 = 0``): its prediction and all of its gradients are discarded.  ``ramp`` replaces it
+    with an increasing linear schedule so every step moves the token, the later ones more, which
+    is what a "T-step refinement" claim requires.
+    """
+    if schedule == "linear_noise":
+        w = (1.0 - alpha_bar).clamp(min=0.0)
+    else:  # ramp
+        w = torch.arange(1, steps + 1, dtype=alpha_bar.dtype) / float(max(steps, 1))
+    return w
+
+
 class NoiseModulatedDenoiser(nn.Module):
     """Two-step noising-denoising refinement (architecture figure "Diffusion Correction").
 
@@ -186,7 +202,8 @@ class NoiseModulatedDenoiser(nn.Module):
     def __init__(self, dim: int = 768, hidden: int = 256, heads: int = 4,
                  steps: int = 2, num_checks: int = 64, cond_dim: int = 256,
                  noise_schedule_power: float = 1.0, motion_dim: int = 2,
-                 memory_dim: int = 128, residual_gate_init: float = -8.0):
+                 memory_dim: int = 128, residual_gate_init: float = -8.0,
+                 write_schedule: str = "ramp"):
         super().__init__()
         self.dim = dim
         self.hidden = hidden
@@ -195,7 +212,12 @@ class NoiseModulatedDenoiser(nn.Module):
         self.cond_dim = cond_dim
         self.motion_dim = int(motion_dim)
         self.memory_dim = int(memory_dim)
+        if write_schedule not in ("ramp", "linear_noise"):
+            raise ValueError(f"unknown diffusion write schedule: {write_schedule!r}")
+        self.write_schedule = write_schedule
         self.register_buffer("alpha_bar", _cosine_noise_schedule(self.steps, noise_schedule_power))
+        self.register_buffer("write_weight", _write_weights(self.steps, write_schedule,
+                                                           self.alpha_bar))
 
         self.in_proj = nn.Linear(dim, hidden)
         self.q_proj = nn.Linear(hidden, hidden)
@@ -315,13 +337,13 @@ class NoiseModulatedDenoiser(nn.Module):
             preds.append(pred)
 
             # ---- residual composition: never a wholesale rewrite ---------------
-            # ``alpha = 1 - q`` is the per-token trust weight.  It was previously applied to the
-            # *noise* only (``eps * (1-alpha)``) while the write-back used a purely global scalar
-            # ``w``.  That asymmetry meant noise was injected only into tokens judged corrupt,
-            # but the correction was then applied to all 256 tokens alike -- undoing the
+            # ``write_gate`` is the per-token *error* probability q.  It used to be applied to
+            # the noise only (``eps * (1-alpha)``) while the write-back used a purely global
+            # scalar ``w``, which meant noise was injected only into tokens judged corrupt but
+            # the correction was then applied to all 256 tokens alike -- undoing the
             # architecture's own "selective recovery" and giving healthy tokens a second,
             # ungated modification on top of the refiner's identity bypass.
-            w = (1.0 - ab).clamp(min=0.0)
+            w = self.write_weight[t].to(tokens.dtype)
             # Selective recovery: a token is corrected in proportion to how DAMAGED it is,
             # not how healthy.  Writing back ``w * trust * pred`` (the previous form) let
             # healthy tokens be rewritten most and damaged ones least -- the exact inverse

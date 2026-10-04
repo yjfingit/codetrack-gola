@@ -135,34 +135,57 @@ run:
           fused: false
           # ORDER AND STRUCTURE MATTER.
           #
-          # `zero_1d_param_weight_decay` is not a filter on the LR groups -- it *collects* the
-          # non-decayed parameters (ndim <= 1, plus norm layers) and assigns weight_decay 0,
-          # carrying no lr of its own so the group inherits the base lr.  Upstream puts it first,
-          # which is correct for weight decay but makes every bias/norm share one lr.  Running it
-          # per LR group (scoped by name_regex) gives both: the right weight decay AND the right
-          # per-group lr.  A bare trailing `zero_1d` then catches everything left over.
+          # ``zero_1d_param_weight_decay`` is not a filter on LR groups in the sense the other
+          # rule types are: it *collects* the parameters that must not be decayed (ndim <= 1, plus
+          # every weight inside a norm layer) and assigns ``weight_decay: 0``.  It removes what it
+          # matches from the pool, so an unfiltered instance is a catch-all.
           #
-          # Measured with this layout: 6 groups, all 1406 trainable tensors covered (before the
-          # lora.A/lora.B whitelist fix it was 1262 -- 144 parameters the forward pass uses were
-          # silently absent from the optimizer).
+          # Two consequences drive this layout:
+          #
+          # 1. Every tensor (weight-matrix) rule carries an explicit ``ndim: 2``, and every
+          #    ``zero_1d`` rule carries ``ndim: [0, 1]``.  Without the dimension scoping the
+          #    first ``zero_1d`` rule drains the 1-D and norm parameters of the WHOLE model into
+          #    one group -- with CodeTrack enabled that is 59 tensors, so the CodeTrack group
+          #    would silently own the head and LoRA biases, and the ``^head\.`` rules below it
+          #    would match nothing.  ``_Filter`` really does apply ``name_regex`` and ``ndim``;
+          #    the previous revision of this file relied on the opposite.
+          # 2. The tensor rules come first, the ``zero_1d`` rules after them, and a bare
+          #    ``zero_1d`` catches the remainder.  Each scope therefore gets BOTH its own lr and
+          #    weight_decay 0 on its biases/norms -- which is what upstream GOLA wants (it also
+          #    zeroes weight decay for ``token_type_embed``).
+          #
+          # Measured with this layout: 8 groups, all 1406 trainable tensors covered, 0 one-
+          # dimensional tensors carrying weight decay, and lr routing
+          #   codetrack 2-D 1e-4 | lora 2-D 2.5e-5 | head 2-D 1e-5 | token_type_embed 2.5e-5
+          #   codetrack 1-D 1e-4 | head 1-D 1e-5 | remainder (base 1e-4)
           per_parameter:
+            - name_regex: 'codetrack\.(motion|memory)\.'
+              ndim: 2
+              lr: 1.e-4
+            - name_regex: 'codetrack\.'
+              ndim: 2
+              lr: 1.e-4
+            - name_regex: 'lora'
+              ndim: 2
+              lr: 2.5e-5
+            - name_regex: '^head\.'
+              ndim: 2
+              lr: 1.e-5
+            - name_regex: 'token_type_embed'
+              ndim: 2
+              lr: 2.5e-5
+              weight_decay: 0.
+            - name_regex: 'codetrack\.memory\.base_prior'
+              ndim: 3
+              lr: 1.e-4
             - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
               name_regex: 'codetrack\.'
               lr: 1.e-4
             - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
               name_regex: '^head\.'
               lr: 1.e-5
-            - name_regex: 'codetrack\.(motion|memory)\.'
-              lr: 1.e-4
-            - name_regex: 'codetrack\.'
-              lr: 1.e-4
-            - name_regex: 'lora'
-              lr: 2.5e-5
-            - name_regex: '^head\.'
-              lr: 1.e-5
-            - name_regex: 'token_type_embed'
-              lr: 2.5e-5
-              weight_decay: 0.
             - type: "zero_1d_param_weight_decay"
         grad_accumulation_steps: 16
         max_grad_norm: 1.0
@@ -174,7 +197,11 @@ run:
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
-            warmup_epochs: 2
+            # 0, not the upstream 2.  A 2-epoch warmup belongs to a single-stage 10-epoch run;
+            # this config is the reference for the STAGED recipe, where S1 is ~1.5 epochs of
+            # updates and would never leave warmup.  Stages set their own warmup by update count
+            # in the stage driver (S1 128 / S2 410 / S3 256 / S4 48 updates).
+            warmup_epochs: 0
             warmup_lr: 1.e-7
         auto_mixed_precision:
           enabled: true
