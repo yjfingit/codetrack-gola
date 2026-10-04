@@ -61,3 +61,12 @@ _probe/grid/out/
 _probe/**/_selftest/
 _probe/**/_dry/
 _probe/**/checkpoint/
+
+# Grid-search runtime artefacts (2026-10-04 S1 round-1 four-GPU sweep).
+#   config/GOLA/_mixin/_grid_*.yaml : written by _probe/grid/grid_make_mixin2.py
+#                                     at launch time, deleted after each trial
+#   _probe/grid/**/out/             : per-arm TensorBoard / checkpoint spool
+#   _probe/grid/**/logs/            : per-arm stdout (also matched by *.log)
+config/GOLA/_mixin/_grid_*.yaml
+_probe/grid/**/out/
+_probe/grid/**/logs/
