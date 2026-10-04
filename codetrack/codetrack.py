@@ -48,6 +48,23 @@ from .recovery import H_RoutedSparseRefiner, MeanVarCompletion, NoiseModulatedDe
 from .template import TemplateProtectionGate
 
 
+def _merge_corruption_flags(token_flag: Optional[torch.Tensor],
+                            image_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    """Frame-level "this input was damaged" flag, from token *or* image corruption.
+
+    ``token_flag`` is per-sample bool from the token-level corruption draw; ``image_mask`` is
+    (B, 6) from the data plugin.  Either can be absent.  Returning ``None`` when both are
+    absent preserves the previous behaviour (the reliability losses are simply skipped).
+    """
+    flags = None
+    if token_flag is not None:
+        flags = token_flag.reshape(token_flag.shape[0]).to(torch.bool)
+    if image_mask is not None and torch.is_tensor(image_mask):
+        img = (image_mask.reshape(image_mask.shape[0], -1).abs().sum(dim=-1) > 0)
+        flags = img if flags is None else (flags | img.to(flags.device))
+    return flags
+
+
 class CodeTrack(nn.Module):
     """Per-frame CodeTrack branch, driven by the GOLA forward pass."""
 
@@ -215,6 +232,7 @@ class CodeTrack(nn.Module):
                 eval_observe: bool = False,
                 corruption_mask: Optional[torch.Tensor] = None,
                 was_corrupted: Optional[torch.Tensor] = None,
+                image_corruption_mask: Optional[torch.Tensor] = None,
                 observe_motion: bool = True,
                 update_state: bool = True,
                 **_: object) -> Dict[str, torch.Tensor]:
@@ -354,7 +372,13 @@ class CodeTrack(nn.Module):
                                device=X_t.device, dtype=X_t.dtype)
         condition = self.condition_proj(torch.cat([ctx_zero, X_aux], dim=-1)) + ctx_scatter
 
-        alpha = (1.0 - q)                      # healthy tokens: no noise, no update
+        # Naming is deliberately explicit: ``q`` is the per-token ERROR probability (block 3),
+        # so ``trust = 1 - q`` is how healthy a token is.  The previous single name ``alpha``
+        # carried "trust" but was multiplied into the denoiser's *write-back*, which inverted
+        # the selective-recovery semantics (healthy tokens got corrected most, damaged ones
+        # least).  Two names make that mistake impossible to repeat.
+        token_error = q
+        token_trust = (1.0 - q)
         if self.denoiser is not None:
             # frame-level condition terms: syndrome s (M), motion (map mean + u_t),
             # temporal memory read-out (pooled to memory_dim)
@@ -372,7 +396,8 @@ class CodeTrack(nn.Module):
                 mem_cond = prior_tokens.mean(dim=1)
             den = self.denoiser(X_rec, condition, syndrome=out_s,
                                 motion=motion_cond, memory=mem_cond,
-                                alpha=alpha.unsqueeze(-1),
+                                token_error=token_error.unsqueeze(-1),
+                                token_trust=token_trust.unsqueeze(-1),
                                 noise_weak=self.cfg.noise_weak_std,
                                 noise_strong=self.cfg.noise_strong_std,
                                 strong_prob=self.cfg.noise_strong_prob)
@@ -443,7 +468,12 @@ class CodeTrack(nn.Module):
             "tokens": toks, "template_ctx": template_ctx,
             "motion": motion_out, "memory": memory_info, "memory_readout": memory_readout,
             "corruption_fraction": (q.mean(dim=-1) if self.template_gate is not None else None),
-            "was_corrupted": was_corrupted,
+            # ``was_corrupted`` is the frame-level trust signal consumed by the memory
+            # reliability head and the template gate.  Image-level corruption must count: the
+            # data plugin corrupts the search crop, so a frame damaged only at image level was
+            # previously reported as trustworthy, and every supervised module was told the wrong
+            # thing about it.
+            "was_corrupted": _merge_corruption_flags(was_corrupted, image_corruption_mask),
             "motion_map_norm": motion_map,
             "motion_target": motion_target,
             "meanvar": mv, "preserve": preserve,

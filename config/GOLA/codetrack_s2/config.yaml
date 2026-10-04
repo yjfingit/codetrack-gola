@@ -1,5 +1,13 @@
-# CodeTrack full training: GOLA-B (pretrained, frozen backbone + trainable LoRA) + CodeTrack
-# on the whole LasHeR training set (979 sequences).
+# CodeTrack stage S2 (spatial joint training) and S1 (set GOLA frozen, see below).
+#
+# TEMPORAL MODULES ARE OFF HERE ON PURPOSE.  The pair sampler draws template / search / online
+# frames independently from a track, and the training runner never calls reset_sequence() per
+# batch, so with motion/memory enabled the recurrent state would carry sequence A's history into
+# sequence K's frame -- fake temporal context.  S1/S2 are therefore purely spatial; the temporal
+# branch is switched on in S3, which supplies real consecutive clips.
+#
+# GOLA-B (pretrained checkpoint, frozen backbone + trainable LoRA) on the whole LasHeR training
+# set (979 sequences).
 #
 # Self-contained `run:` block (the upstream run.yaml is not included) because the mixin
 # machinery can only *replace existing keys* -- `json_query_replace` skips a key that is not
@@ -7,7 +15,7 @@
 #
 # Batch: 8 x 16 = 128, matching the upstream GOLA recipe.  Measured peak at micro_batch=8 is
 # 4.40 GiB of 23.5 GiB, so accumulation is what reaches the upstream batch size without OOM.
-name: "CodeTrack/B-224 full"
+name: "CodeTrack/B-224 S2 spatial joint"
 
 logging:
   category: "CodeTrack"
@@ -40,7 +48,7 @@ model:
     use_rslora: false
   num_vpt_tokens: 10
   adapter_reduction_factor: 16
-  codetrack: !include "../dinov2/codetrack_b.yaml"
+  codetrack: !include "../dinov2/codetrack_spatial.yaml"
 
 run:
   type: "default"
@@ -167,6 +175,9 @@ run:
         grad_accumulation_steps: 16
         max_grad_norm: 1.0
         zero_grad_set_to_none: true
+        # A 2-epoch warmup belongs to a 10-epoch single-stage run.  S1 is ~1.5 epochs total, so
+        # it would never leave warmup; stages define their own warmup by update count in the
+        # stage driver.  `warmup_prefix: true` with 0 epochs keeps the cosine anchored at step 0.
         lr_scheduler:
           type: "timm"
           sched: "cosine"
@@ -174,7 +185,7 @@ run:
           parameters:
             lr_min: 1.e-6
             warmup_prefix: true
-            warmup_epochs: 2
+            warmup_epochs: 0
             warmup_lr: 1.e-7
         auto_mixed_precision:
           enabled: true

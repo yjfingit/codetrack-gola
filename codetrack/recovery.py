@@ -232,6 +232,8 @@ class NoiseModulatedDenoiser(nn.Module):
                 motion: Optional[torch.Tensor] = None,
                 memory: Optional[torch.Tensor] = None,
                 alpha: Optional[torch.Tensor] = None,
+                token_error: Optional[torch.Tensor] = None,
+                token_trust: Optional[torch.Tensor] = None,
                 train_noise: bool = True, noise_weak: float = 0.05,
                 noise_strong: float = 0.20, strong_prob: float = 0.5
                 ) -> Dict[str, torch.Tensor]:
@@ -248,6 +250,15 @@ class NoiseModulatedDenoiser(nn.Module):
 
         if alpha is None:
             alpha = torch.ones(b, n, 1, device=tokens.device, dtype=tokens.dtype)
+
+        # ``alpha`` historically meant "trust".  The write-back must be gated by the *error*
+        # probability, so derive it explicitly and let the caller pass either convention.
+        if token_error is not None:
+            write_gate = token_error
+        elif token_trust is not None:
+            write_gate = 1.0 - token_trust
+        else:
+            write_gate = 1.0 - alpha
 
         # broadcast the frame-level condition terms onto every token
         if syndrome is None:
@@ -274,7 +285,7 @@ class NoiseModulatedDenoiser(nn.Module):
                                     torch.full_like(x[:, :1, :1], noise_weak))
                 eps = torch.randn_like(x) * sigma
                 # only corrupted (low-alpha) tokens receive noise
-                eps = eps * (1.0 - alpha)
+                eps = eps * (1.0 - alpha)      # (1 - trust) == error
                 x_in = (ab.sqrt() * x + (1.0 - ab).clamp(min=0).sqrt() * eps)
             else:
                 x_in = x
@@ -311,7 +322,11 @@ class NoiseModulatedDenoiser(nn.Module):
             # architecture's own "selective recovery" and giving healthy tokens a second,
             # ungated modification on top of the refiner's identity bypass.
             w = (1.0 - ab).clamp(min=0.0)
-            x = x + w * alpha * pred
+            # Selective recovery: a token is corrected in proportion to how DAMAGED it is,
+            # not how healthy.  Writing back ``w * trust * pred`` (the previous form) let
+            # healthy tokens be rewritten most and damaged ones least -- the exact inverse
+            # of what this branch exists to do.
+            x = x + w * write_gate * pred
 
         return {"X_denoised": x, "step_preds": preds}
 

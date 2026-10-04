@@ -374,3 +374,147 @@ collated.target.update({'num_positive_samples': ..., 'boxes': collated_gt_bboxes
 **当前可以跑通全量训练，但不应该** —— 运行会得到"恢复/诊断分支被训练、运动分支完全没被监督"
 的半成品，浪费算力且结论不可用。**先修 `L_motion` 进 criterion + 建全量配置 + 分组 LR**，
 再去跑 979 序列。
+
+---
+
+## 14. 训练基础设施修复（第三轮：外部审查后）
+
+外部审查判定 **NO-GO**，并指出 5 个会让"训练正常结束但学到的东西不对"的问题。逐条实测核实后**全部为真**，
+已修复。另有一个是**我自己上一轮引入的回归**。
+
+### P0-1｜scheduler 时间轴快 16 倍（已修）
+
+`scheduler builder` 内部已做 `num_updates_per_epoch = num_iterations_per_epoch // grad_accumulation_steps`，
+并据此推出 `warmup_t=2048`、`t_initial=10240`。但 runner 传的是 **micro-step 计数**：
+
+```python
+self._lr_scheduler_per_iteration.step_update(self._iteration)   # 修复前
+```
+
+后果：2 个 epoch 的 warmup 在 **128** 步就结束（应 2048），10 epoch 的 cosine 在 **640** 步
+（≈0.625 epoch）就跑完，其余训练全部趴在 `lr_min`。已改为传 optimizer update 计数：
+
+```python
+optimizer_step = (self._iteration + 1) // self._grad_accumulation_steps
+```
+
+### P0-2｜梯度累积是"求和"而非"平均"（已修）
+
+```python
+loss_scale, grad_norm = self._parameter_updater.backward_and_unscale(
+    criterion_output.loss + orth_loss, ...)     # 修复前：未除以累积步数
+```
+
+后果：每个梯度被放大 16 倍，等效学习率 16 倍，且 pre-clip 梯度范数虚高——这解释了此前
+`grad_norm = 517` 对上 `max_grad_norm = 1.0` 的异常。已改为 `... / self._grad_accumulation_steps`。
+
+### P0-3｜`L_diag` 实际上从未计算（已修，影响架构主张）
+
+criterion 的诊断分支需要 `error_target` 与 `syndrome_target`，而**模型中从不生成这两个键**，
+所以该分支永不进入。实测：训练日志里**从未出现 `Loss/diag`**。
+这意味着**诊断头完全没有显式监督**，只能靠跟踪/恢复的间接梯度——对"ECC syndrome 能定位坏 token"
+这一核心主张远远不够。
+
+**修法**：目标由 **clean 与 corrupted teacher 特征的真实差异**导出，而非直接使用注入器的
+`token_mask`（后者会让诊断头学会"读标签"，且无法迁移到 LasHeR 天然含有的退化）：
+
+```
+e_feat = 1 - cos(X_tir_corrupted, X_tir_clean)        # 表征侧偏差
+e_task = 0.5 * (e_feat + e_aux)                       # 跨模态一致性
+e*     = alpha*e_feat + (1-alpha)*e_task              # alpha=0.5
+s*     = H_bar @ e*                                   # syndrome 目标
+```
+
+实测：**`Loss/diag = 0.55`**，`error_target (B,256)`、`syndrome_target (B,64)`，此前完全不存在。
+
+### P0-4｜Denoiser 写回方向反了（已修）
+
+```python
+alpha = 1.0 - q                 # alpha = trust
+eps   = eps * (1.0 - alpha)     # = q     -> 坏 token 加噪   ✓
+x     = x + w * alpha * pred    # 按 trust 写回 -> 健康 token 修得多，坏 token 修得少  ✗
+```
+
+与"选择性恢复"**完全相反**。这是**我上一轮引入的**：原先写回无门控（均匀施加），我为它加上
+`alpha` 门控时用了错误的语义。已改为按**错误概率**门控，并拆成 `token_error` / `token_trust`
+两个名字以防再犯。实测：坏 token 改动是健康 token 的 **91.8×**。
+
+### P0-5｜S1/S2 必须关闭 temporal（已修）
+
+pair sampler 在同一 track 上**独立随机抽帧**，且训练 runner **不按批次 reset `reset_sequence()`**。
+若 motion/memory 开启，递推状态会把序列 A 的历史带进序列 K 的当前帧——**假时序**。
+已新建 `config/GOLA/dinov2/codetrack_spatial.yaml`（`motion/memory/template_protection` 全 false）
+与 `config/GOLA/codetrack_s2/`，`codetrack_full` 保持全开供 S3/S4 使用。
+
+### P1-6｜我自己引入的 weight-decay 回归（已修）
+
+**审查在此纠正了我一个错误判断，我认为它是对的。** optimizer builder 里：
+
+```python
+optimizer_parameters = {'lr': lr, 'weight_decay': weight_decay}
+optimizer = optimizer_cls(optimizer_param_groups, **optimizer_parameters)
+```
+
+构造函数**显式传了 `lr`**，所以没有 `lr` 的 param group 继承的是**基座 `1e-4`**，
+而**不是** AdamW 签名默认的 `1e-3`。我上一轮"1e-3"的判断不成立。
+
+更严重的是，我把分组规则提到 `zero_1d` 之前，导致 1 维参数（bias/norm）被前面的正则组吃掉，
+**丢掉了 `weight_decay=0` 的语义**。
+
+**修法**：`zero_1d_param_weight_decay` 的语义是"收集非衰减参数（ndim≤1 或 norm 层）并给 wd=0"，
+且**自身不带 lr**。所以按 LR 分组各写一条、并加 `name_regex` 限定作用域，就能同时满足两者：
+
+```yaml
+- type: "zero_1d_param_weight_decay"
+  name_regex: 'codetrack\.'
+  lr: 1.e-4
+- name_regex: 'codetrack\.'
+  lr: 1.e-4
+...
+- type: "zero_1d_param_weight_decay"    # 兜底
+```
+
+实测 6 组、**1406/1406 张量全覆盖**、1 维参数 `wd=0` 且 lr 正确。
+
+### P0-7｜`lora.A` / `lora.B` 从未被优化器更新（新发现，已修）
+
+**这一条是我在修 6 时顺带发现的，比审查列出的问题更严重。**
+
+优化器白名单原为 `("lora.GA", "lora.GB", "embed", "head", "codetrack")`。
+而 `LoRALayer` 的实际参数名有两类：
+
+| 名称 | 数量 | 前向是否使用 | 是否在白名单 |
+|---|---:|---|---|
+| `.lora.A` / `.lora.B` | **144** | **是**（`LoRALayer.forward` 用的就是它们） | **否** ❌ |
+| `.lora.GA.{0..7}` / `.lora.GB.{0..7}` | 1152 | 是 | 是 |
+
+实测确认**全部 1296 个 LoRA 张量都拿到梯度**，即 144 个真正参与前向的基座参数
+**被静默排除在优化器之外**。已把 `lora.A`/`lora.B` 加入白名单，覆盖率从 **1262/1406 → 1406/1406**。
+
+### P1-8｜图像级 corruption 污染了 clean teacher（部分修复）
+
+数据 plugin 直接 `collated.input["x"] = corrupted_x`，**没有保留 clean 版本**。
+所以对 image-level corruption 样本，模型里的所谓 teacher 拿到的仍是**被破坏的图像**——
+`student = corrupted` 与 `teacher = corrupted` 相同，师生残差失去意义。
+
+已修的部分：`image_corruption_mask` 现在并入 `was_corrupted`（此前图像级破坏被报成"可信帧"，
+使记忆可靠性与模板门控都拿到错误标签）。
+**未修**：保留 `x_clean` 需要改数据 plugin 的接口，留待 S1 前处理。
+
+### 新增验收门
+
+`tools/preflight_acceptance.py` —— **26/26 通过**，覆盖：优化器覆盖率、LR 分组、
+1 维参数 `wd=0`、全部损失项确实计算、诊断目标存在、8 个模块梯度非零、
+scheduler 时间轴、选择性恢复方向。
+
+### 当前状态
+
+| 验证 | 结果 |
+|---|---|
+| `tools/preflight_acceptance.py` | **26/26** |
+| `tools/causality_check.py` | **6/6** |
+| `tools/codetrack_verify.py` | 恒等性 `7.96e-5`、checkpoint 1311/1311、10/10 梯度 |
+| `tools/lora_grad_check.py` | LoRA 1296/1296，主干 0 漂移 |
+
+**S3 前仍需修**（审查列出，我同意）：causal clip 采样器、scheduled sampling 实际接线、
+TBPTT、D4（可靠性值域 0.5–0.73）、D5（历史 slot 共享标签）、当前帧 GT 的 target-mask 泄漏。

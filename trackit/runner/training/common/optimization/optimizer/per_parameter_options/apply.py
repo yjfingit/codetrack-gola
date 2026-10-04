@@ -31,7 +31,12 @@ def parse_optimizer_per_params_config(model: nn.Module, criterion: Optional[nn.M
     # parentheses below state the intent, and the "codetrack" prefix is added so the
     # CodeTrack branch (motion / ECC / recovery / denoiser / gate) is actually optimised --
     # without it those modules receive gradients but are never updated.
-    trainable_prefixes = ("lora.GA", "lora.GB", "embed", "head", "codetrack")
+    # ``lora.A`` / ``lora.B`` must be listed explicitly.  The group-orthogonal adapters expose
+    # both the base pair (``.lora.A``, ``.lora.B``) and per-group pairs (``.lora.GA.{i}``,
+    # ``.lora.GB.{i}``); all 1296 of them receive gradient, but only the ``.G*`` names matched
+    # this whitelist, so 144 base parameters -- which the forward pass actually consumes --
+    # were silently never updated by the optimizer.
+    trainable_prefixes = ("lora.A", "lora.B", "lora.GA", "lora.GB", "embed", "head", "codetrack")
     model_named_parameters = {
         name: param for name, param in model.named_parameters()
         if param.requires_grad and any(p in name for p in trainable_prefixes)

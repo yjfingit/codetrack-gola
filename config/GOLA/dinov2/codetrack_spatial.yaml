@@ -1,0 +1,92 @@
+# CodeTrack branch, SPATIAL-ONLY variant (stages S1 / S2).
+#
+# motion / memory / template-protection are disabled because the pair sampler yields
+# independently drawn frames and the runner does not reset the recurrent state per batch, so
+# the Kalman filter and the memory bank would mix unrelated sequences.  The temporal branch is
+# enabled in S3, which feeds real consecutive clips.
+# CodeTrack branch hyper-parameters.  Values are the ones annotated on the architecture
+# figure; see codetrack/config.py for the full schema.
+enabled: true
+
+# token layout of the fused GOLA sequence [z_v, x_v, z_i, x_i, d_v, d_i]
+z_len: 64          # 8 x 8 template tokens
+x_len: 256         # 16 x 16 search tokens
+dim: 768           # DINOv2 ViT-B/14 embedding dim
+grid: 16
+
+# block 3 / 3.1 -- ECC error diagnosis
+mid_dim: 128             # W_x / W_r : 768 -> 128
+num_checks: 64           # M
+h_links_per_check: 12    # d_c
+h_min_col_degree: 3      # d_v
+h_locality_window: 5     # each check watches a local 2-D window
+h_free_edge_frac: 0.25   # share of edges drawn globally (0 = pure local, 1 = no locality)
+h_seed: 1234
+syndrome_hidden: 128
+syndrome_cos: true
+detection_prior: 0.2
+
+# block 4 -- motion prior + temporal memory
+motion_enabled: false
+motion_process_noise: 0.01
+motion_measurement_noise: 0.04
+memory_enabled: false
+memory_frames: 3
+memory_tokens: 8
+memory_dim: 128
+
+# block 5 -- selective recovery + noising-denoising correction
+topk_tokens: 32          # K_max, 12.5% of N
+num_neighbours: 8        # K_n
+refiner_hidden: 256      # 768 -> 256 -> 768
+refiner_heads: 4
+# Single scalar controlling BOTH stage-0 identity and gradient reachability of the whole
+# correction branch (see codetrack/config.py).  sigmoid(-8) = 3.4e-4.  Do not set to a large
+# negative value: -12 connects the branch but leaves it effectively untrainable.
+residual_gate_init: -8.0
+# How strongly the Kalman prior steers H-routed evidence selection (0 = ignored).
+motion_bias_scale: 0.5
+diffusion_enabled: true
+diffusion_steps: 2       # 2-step refinement, never a 20-100 step DDPM
+diffusion_hidden: 256
+diffusion_heads: 4
+noise_weak_std: 0.05
+noise_strong_std: 0.20
+noise_strong_prob: 0.5
+
+# block 6 -- online template protection
+template_protection: false
+template_threshold: 0.5
+gola_update_threshold: 0.84
+
+# loss weights (architecture figure panel)
+w_track_corr: 1.0
+w_track_clean: 0.25
+lambda_diag: 0.5
+lambda_rec: 0.2
+lambda_align: 0.2
+lambda_pres: 0.01
+lambda_mem: 0.1
+lambda_gate: 0.1
+lambda_motion: 0.2
+diagnosis_alpha: 0.5
+
+# Training-time corruption.
+#
+# LasHeR already contains the appearance challenges in abundance (of 1224 sequences: partial
+# occlusion 85.5%, total occlusion 29.7%, motion blur 31.5%, low illumination 16.5%, over
+# exposure 9.1%, deformation 16.2%, low resolution 28.1%).  Only 4.6% of sequences are free of
+# any degradation, so *natural* challenge data is plentiful and synthetic corruption must NOT
+# be the thing that teaches the diagnosis head about low light / blur / occlusion -- otherwise
+# it just learns to recognise the injector.
+#
+# Its only remaining job is to provide a *dense, localised* error label for the token-level
+# diagnosis: real degradations are labelled per-sequence, not per-patch, so L_diag would
+# otherwise have no fine-grained target.  Hence the rates are deliberately low, and the
+# training distribution stays dominated by clean data.
+corruption_enabled: true
+corruption_image_prob: 0.06    # image-level attack rate  (was 0.45)
+corruption_token_prob: 0.06    # token-level attack rate  (was implicitly 0.33)
+                               # -> held-out real data 86.3% / token 7.6% / image 5.6% / both 0.5%
+corruption_token_ratio: 0.4
+corruption_severity: 0.4

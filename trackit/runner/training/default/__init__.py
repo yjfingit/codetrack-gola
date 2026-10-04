@@ -161,8 +161,15 @@ class DefaultTrainer(Runner):
                 orth_loss = compute_rand_pair_orth_loss(self._model_instance.model, weight=1.4e-3, n_groups=8)
                 metrics.update({"orth": orth_loss.detach().cpu().item()})
 
+                # Gradient accumulation must average, not sum.  Backwarding the raw sum scales
+                # every gradient by ``grad_accumulation_steps``, so with accumulation 16 the
+                # effective learning rate was 16x too large and the pre-clip gradient norm was
+                # 16x inflated -- which is why it read several hundred against max_grad_norm=1.0
+                # and why clipping almost always dominated the update.
+                backward_loss = (criterion_output.loss + orth_loss) / self._grad_accumulation_steps
+
                 loss_scale, grad_norm = self._parameter_updater.backward_and_unscale(
-                    criterion_output.loss + orth_loss,
+                    backward_loss,
                     self._optimizer,
                     create_graph=is_second_order,
                     update_grad=update_grad)
@@ -187,13 +194,20 @@ class DefaultTrainer(Runner):
                         self._optimizer.zero_grad()
                     else:
                         self._optimizer.zero_grad(self._zero_grad_set_to_none)
+                    # The scheduler's time axis counts OPTIMIZER UPDATES, not micro-steps: its
+                    # builder already divides by grad_accumulation_steps when it computes
+                    # ``num_updates_per_epoch``, ``warmup_t`` and ``t_initial``.  Passing the raw
+                    # micro-step counter therefore advanced it 16x too fast -- a 2-epoch warmup
+                    # finished after 128 updates instead of 2048, and the 10-epoch cosine was
+                    # exhausted in ~0.6 epoch, leaving the rest of training at lr_min.
+                    optimizer_step = (self._iteration + 1) // self._grad_accumulation_steps
                     if self._lr_scheduler_per_iteration is not None:
                         if isinstance(self._lr_scheduler_per_iteration, timmScheduler):
-                            self._lr_scheduler_per_iteration.step_update(self._iteration)
+                            self._lr_scheduler_per_iteration.step_update(optimizer_step)
                         else:
                             self._lr_scheduler_per_iteration.step()
                     if self._wd_scheduler_per_iteration is not None:
-                        self._wd_scheduler_per_iteration.step_update(self._iteration)
+                        self._wd_scheduler_per_iteration.step_update(optimizer_step)
                     if self._ema is not None:
                         self._ema.update_parameters(self._raw_model)
             else:

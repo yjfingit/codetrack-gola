@@ -6,6 +6,7 @@ from typing import Tuple, List, Optional, Mapping, Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from collections import OrderedDict
 from timm.models.layers import trunc_normal_
 from trackit.models.backbone.dinov2 import DinoVisionTransformer, interpolate_pos_encoding
@@ -256,6 +257,48 @@ class GOLA_DINOv2(nn.Module):
                     "boxes": clean_logits["boxes"],
                     "codetrack_extras": {"clean_tokens": clean_tokens.detach()}}
 
+        # ---- diagnosis targets -------------------------------------------------
+        # ``L_diag`` was previously dead code: the criterion looks for ``error_target`` and
+        # ``syndrome_target``, and nothing produced them, so the diagnosis head had NO explicit
+        # supervision at all -- it could only learn indirectly through the tracking/recovery
+        # gradient, which is far too weak for the claim that the syndrome localises the damaged
+        # tokens.
+        #
+        # The target is derived from the *measured discrepancy* between the clean reference
+        # feature and the corrupted one, not from the token mask the injector applied.  Handing
+        # the head the injector's mask would teach it to read a label instead of to detect
+        # damage, and it would not transfer to the natural degradations LasHeR already contains.
+        #
+        # ``e_feat``   : per-token normalised feature deviation (the representation-side error)
+        # ``alpha``    : the plan's weighting between feature error and task error
+        # ``X_clean`` is detached -- it is a target, and the teacher must not receive the
+        # student's gradients.
+        diag_targets = {}
+        if needs_teacher:
+            c_xt = self._codetrack_split(clean_fused)["X_TIR"].detach()
+            c_xa = self._codetrack_split(clean_fused)["X_RGB"].detach()
+            k_xt = self._codetrack_split(cor_fused)["X_TIR"]
+            k_xa = self._codetrack_split(cor_fused)["X_RGB"]
+            alpha = float(getattr(self.codetrack_cfg, "diagnosis_alpha", 0.5))
+
+            # feature-side error: cosine deviation, scale-free so bright/dark frames compare
+            e_feat = (1.0 - F.cosine_similarity(k_xt, c_xt, dim=-1, eps=1e-6))
+            e_feat = e_feat.clamp(0.0, 1.0)
+            # cross-modal error: the RGB search tokens are the auxiliary evidence; if they also
+            # deviate, the frame is damaged in both modalities rather than in one
+            e_aux = (1.0 - F.cosine_similarity(k_xa, c_xa, dim=-1, eps=1e-6)).clamp(0.0, 1.0)
+            e_task = 0.5 * (e_feat + e_aux)
+
+            err = (alpha * e_feat + (1.0 - alpha) * e_task).detach().clamp(1e-4, 1.0 - 1e-4)
+            diag_targets["error_target"] = err
+
+            # syndrome target: apply the same parity check to the error field, i.e. what the
+            # checks *should* read if the per-token error were as measured.  ``H_bar`` is
+            # (M, N) and ``err`` is (B, N) -> (B, M).
+            H_bar = self.codetrack.H.matrix().to(err.dtype)
+            s_tgt = torch.einsum("mn,bn->bm", H_bar, err)
+            diag_targets["syndrome_target"] = s_tgt.detach()
+
         # ---- student / CodeTrack pass ---------------------------------------
         # Inference-time motion observation.  ``image_size`` is now supplied by the evaluation
         # pipeline, and ``eval_observe`` enables feeding the *previous* frame's own decoded box
@@ -271,6 +314,7 @@ class GOLA_DINOv2(nn.Module):
             box_confidence=kwargs.get("box_confidence"),
             corruption_mask=token_mask,
             was_corrupted=(drop_token if drop_token is not None else None),
+            image_corruption_mask=image_corruption_mask,
             update_state=True,
         )
         with torch.autocast('cuda', enabled=False):
@@ -305,6 +349,10 @@ class GOLA_DINOv2(nn.Module):
         extras = {
             "teacher": clean_logits,
             "clean_tokens": clean_tokens.detach(),
+            # L_diag supervision: without these two keys the criterion's diagnosis branch never
+            # fires (it tests ``q is not None and error_target is not None``), which is why
+            # Loss/diag never appeared in any run.
+            **diag_targets,
             "recovered": out["X_final"],
             "q": out["q"], "s": out["s"],
             "suspect_index": out["suspect_index"],
