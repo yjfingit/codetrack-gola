@@ -1,0 +1,39 @@
+{
+  "probe": "oracle_gate_v1",
+  "checkpoint": "_probe/satr_stage2_best.safetensors",
+  "topk": 32,
+  "satr_rounds": 3,
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "damage_fraction": 0.150390625,
+  "results": {
+    "learned": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.027230162173509598,
+      "gain_total": 0.00043626161641441286,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07233819365501404,
+      "gain_damage": 0.0016450046095997095
+    },
+    "oracle_soft": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02622186578810215,
+      "gain_total": 0.0014445570996031165,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.06441035121679306,
+      "gain_damage": 0.009572839364409447
+    },
+    "oracle_hard": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02625179849565029,
+      "gain_total": 0.0014146262547001243,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.06457684934139252,
+      "gain_damage": 0.009406344965100288
+    }
+  }
+}

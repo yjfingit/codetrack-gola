@@ -1,0 +1,37 @@
+{
+  "probe": "oracle_gate_v1",
+  "checkpoint": "_probe/grid/s1_h20_rank_loss/out/rank10_lr3e4/GOLA-codetrack_s1-mixin-_grid_rank10_lr3e4-2026.10.04-19.28.22-842275/checkpoint/epoch_00/model.bin",
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "damage_fraction": 0.150390625,
+  "results": {
+    "learned": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.027526307851076126,
+      "gain_total": 0.0001401139161316678,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07329339534044266,
+      "gain_damage": 0.0006897961720824242
+    },
+    "oracle_soft": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.027054110541939735,
+      "gain_total": 0.0006123108905740082,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.06763166189193726,
+      "gain_damage": 0.006351531483232975
+    },
+    "oracle_hard": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02707161381840706,
+      "gain_total": 0.0005948067991994321,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.0677001103758812,
+      "gain_damage": 0.00628307880833745
+    }
+  }
+}

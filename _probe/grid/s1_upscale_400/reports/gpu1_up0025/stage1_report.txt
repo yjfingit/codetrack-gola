@@ -1,0 +1,34 @@
+================================================================
+CodeTrack Stage 1 Report -- gpu1_up0025
+================================================================
+  [PASS] no NaN/Inf in loss   3199 steps
+  [PASS] grad_norm finite at accumulation boundaries   max=0.560
+  [FAIL] cosine horizon traversed   0.000e+00 -> 3.000e-06
+  [WARN] parameter deltas available   no before/after snapshot supplied
+  [PASS] diagnosis AUROC(q, corruption_mask) above chance   AUROC=0.5666
+  [WARN] diagnosis AUROC sanity floor (0.6)   AUROC=0.5666 -- sanity check only, not a paper claim
+  [FAIL] q has not collapsed to a constant   q_std=1.000e-04
+  [FAIL] q separates damaged from untouched tokens   pos=0.1967 neg=0.1967
+  [FAIL] recovery improves on its input (d_final < d_input)   d_input=0.1095 d_final=0.1117 gain_total=-0.0003 (need > 0.005)
+  [WARN] residual gate probed   gate value not supplied
+
+Metrics:
+  AUPRC(q, mask)               = 0.0386
+  AUROC(q, mask)               = 0.5666
+  Error/d_after                = 0.1117
+  Error/d_before               = 0.1094
+  Error/d_input                = 0.1095
+  Error/gain_refiner           = 0.0002
+  Error/gain_total             = -0.0003
+  lr_first                     = 0.0
+  lr_last                      = 3e-06
+  lr_max_seen                  = 0.0001
+  lr_min_seen                  = 0.0
+  micro_steps_logged           = 3199.0
+  q_neg_mean                   = 0.1967
+  q_pos_mean                   = 0.1967
+  q_std                        = 0.0001
+  updates_logged               = 199.0
+
+FINAL: NO-GO
+================================================================

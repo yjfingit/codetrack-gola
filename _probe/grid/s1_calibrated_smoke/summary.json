@@ -1,0 +1,17 @@
+{
+  "ratchet": "CodeTrack",
+  "round": "H5_calibrated_s1_scale_screen",
+  "hypothesis": "After production syndrome calibration is wired, residual output scale may determine recovery gain.",
+  "resource": {"gpus": [1, 2, 3, 4], "gpu_model": "RTX 4090", "reserve_policy": "left GPUs 0,5,6 untouched"},
+  "calibration": {"applied_once_per_arm": true, "checkpoint_gain": {"min": 5.4303965, "max": 5.4303975}, "checkpoint_offset": {"min": 1.2829457, "max": 1.2829459}},
+  "trials": {
+    "gpu1_up0025": {"up_init_std": 0.0025, "final80_gain_total": 0.00018, "final80_spearman": 0.0151, "decision": "NO-GO"},
+    "gpu2_up005": {"up_init_std": 0.005, "final80_gain_total": 0.00020, "final80_spearman": 0.0155, "decision": "NO-GO"},
+    "gpu3_up010": {"up_init_std": 0.01, "final80_gain_total": 0.00018, "final80_spearman": 0.0152, "decision": "NO-GO"},
+    "gpu4_up020": {"up_init_std": 0.02, "final80_gain_total": 0.00018, "final80_spearman": 0.0151, "decision": "NO-GO"}
+  },
+  "conclusion": "H2 rejected: initialization scale does not clear recovery gates after calibration is correctly applied.",
+  "next_hypothesis": "H6 rejected in its naive form: calibration parameters do not collapse; investigate syndrome-to-q amplitude loss after training.",
+  "s2_started": false,
+  "reason": "S1 hard recovery gate remains failed; temporal/joint training would confound an unvalidated spatial recovery branch."
+}

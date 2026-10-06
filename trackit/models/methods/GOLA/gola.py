@@ -3,6 +3,7 @@
 # Add support for RGB-T dataset
 
 from typing import Tuple, List, Optional, Mapping, Any
+import os
 
 import torch
 import torch.nn as nn
@@ -97,6 +98,11 @@ class GOLA_DINOv2(nn.Module):
         n_side = int(round((x.shape[-1] // self.patch_embed.patch_size[0])))
         n_tokens = n_side * n_side
         p = self.patch_embed.patch_size[0]
+        # CodeTrack recovers X_TIR and consumes X_RGB as auxiliary evidence. Corrupting all six
+        # channels destroyed the auxiliary modality at exactly the locations it was supposed to
+        # help reconstruct, while the supervision mask still described an X_TIR target. Keep the
+        # RGB half intact and apply synthetic token damage only to the TIR half.
+        target_channels = slice(x.shape[1] // 2, None)
         mask_b = torch.zeros(b, n_tokens, dtype=torch.bool, device=x.device)
         k = max(1, int(round(ratio * n_tokens)))
         for i in range(b):
@@ -105,8 +111,25 @@ class GOLA_DINOv2(nn.Module):
             if kind in ("block_erase", "burst_erase", "modality_drop"):
                 side = max(1, int(round(k ** 0.5))) if kind == "block_erase" else k
                 if kind == "block_erase":
-                    top = int(torch.randint(0, max(1, n_side - side + 1), (1,)).item())
-                    left = int(torch.randint(0, max(1, n_side - side + 1), (1,)).item())
+                    centered = bool(getattr(self.codetrack_cfg, "corruption_centered", False))
+                    spatial_mode = str(getattr(self.codetrack_cfg, "corruption_spatial_mode", "random"))
+                    if spatial_mode == "quadrant_mix":
+                        # Sample one of four spatial quadrants and keep the whole block in it.
+                        # The random draw is per selected frame, so a batch covers all quadrants
+                        # over time without coupling the corruption to the object box.
+                        q = int(torch.randint(0, 4, (1,)).item())
+                        half = n_side // 2
+                        row0 = 0 if q < 2 else half
+                        col0 = 0 if q % 2 == 0 else half
+                        span = max(1, half - side + 1)
+                        top = row0 + int(torch.randint(0, span, (1,)).item())
+                        left = col0 + int(torch.randint(0, span, (1,)).item())
+                    elif centered:
+                        top = max(0, (n_side - side) // 2)
+                        left = max(0, (n_side - side) // 2)
+                    else:
+                        top = int(torch.randint(0, max(1, n_side - side + 1), (1,)).item())
+                        left = int(torch.randint(0, max(1, n_side - side + 1), (1,)).item())
                     idx = [(top + dy) * n_side + (left + dx)
                            for dy in range(side) for dx in range(side)
                            if top + dy < n_side and left + dx < n_side]
@@ -118,14 +141,16 @@ class GOLA_DINOv2(nn.Module):
                     row, col = divmod(t, n_side)
                     # zero the crop region in *normalised* space (0 == channel mean per
                     # modality), which is what a real erasure looks like to the backbone
-                    x_out[i, :, row * p:(row + 1) * p, col * p:(col + 1) * p] = 0.0
+                    x_out[i, target_channels,
+                          row * p:(row + 1) * p, col * p:(col + 1) * p] = 0.0
                     mask_b[i, t] = True
             else:  # feat_noise: additive noise over a random token subset
                 idx = torch.randperm(n_tokens)[:k]
                 for t in idx:
                     row, col = divmod(int(t), n_side)
-                    x_out[i, :, row * p:(row + 1) * p, col * p:(col + 1) * p] += \
-                        torch.randn_like(x_out[i, :, row * p:(row + 1) * p, col * p:(col + 1) * p]) * severity
+                    patch = x_out[i, target_channels,
+                                  row * p:(row + 1) * p, col * p:(col + 1) * p]
+                    patch.add_(torch.randn_like(patch) * severity)
                     mask_b[i, t] = True
         self._last_token_mask = mask_b
         return x_out, mask_b
@@ -228,6 +253,16 @@ class GOLA_DINOv2(nn.Module):
                 cor_fused = block(cor_fused)
             cor_fused = self.norm(cor_fused)
 
+        # Baseline measurement mode: keep the training-class GOLA weight loader and its
+        # LoRA parameter mapping, but bypass the optional CodeTrack branch at inference.
+        # This avoids comparing the legacy merged inference class (whose checkpoint key
+        # layout differs) against a training-class CodeTrack model.
+        if (not self.training and bool(getattr(self.codetrack_cfg, "extra", {}).get(
+                "identity_only", False))):
+            baseline_tokens = self._fuse_search(
+                cor_fused, z_v.shape[1], x_v_c.shape[1])
+            return self.head(baseline_tokens)
+
         # ---- CLEAN TEACHER branch: no gradient ---------------------------------
         # The teacher is only a *target* for the diagnosis residual; letting it receive the
         # student's gradients would make the target move with the prediction.  Its features
@@ -315,6 +350,14 @@ class GOLA_DINOv2(nn.Module):
         # back into the Kalman filter (see CodeTrack.forward).  Without this the filter is
         # seeded once and never updated, so the motion prior is a constant.
         eval_observe = (not self.training) and image_size is not None
+        # Optional diagnostic head output before any ECC write-back. This is only computed for
+        # explicitly requested mechanism visualisation and never affects the tracking path.
+        pre_recovery_head = None
+        if os.environ.get("CODETRACK_DIAG_PREPOST", "0") == "1":
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                pre_tokens = self._codetrack_split(cor_fused)["X_TIR"]
+                pre_recovery_head = self.head(pre_tokens.float())
+
         out = self.codetrack(
             F_L=cor_fused,
             gt_box_xywh=gt_box if kwargs.get("observe_motion", True) else None,
@@ -329,6 +372,29 @@ class GOLA_DINOv2(nn.Module):
         )
         with torch.autocast('cuda', enabled=False):
             head_out = self.head(out["X_final"].float())
+            # Training-only selective-update target.  A frame is trustworthy for correction when
+            # it was not synthetically damaged and the corrected head preserves most of the
+            # clean-teacher response.  This teaches the shared reliability gate the actual
+            # contract of selective propagation instead of equating every clean input with a
+            # universally safe write-back.
+            gate_target = None
+            if self.training and needs_teacher and isinstance(clean_logits, dict):
+                clean_peak = clean_logits["score_map"].detach().float().flatten(1).sigmoid().amax(dim=-1)
+                corr_peak = head_out["score_map"].detach().float().flatten(1).sigmoid().amax(dim=-1)
+                damaged_flag = None
+                if drop_token is not None:
+                    damaged_flag = drop_token.reshape(drop_token.shape[0]).to(torch.bool)
+                if image_corruption_mask is not None and torch.is_tensor(image_corruption_mask):
+                    image_flag = (image_corruption_mask.reshape(image_corruption_mask.shape[0], -1)
+                                  .abs().sum(dim=-1) > 0)
+                    damaged_flag = image_flag if damaged_flag is None else (
+                        damaged_flag | image_flag.to(damaged_flag.device))
+                if damaged_flag is None:
+                    damaged_flag = torch.zeros_like(clean_peak, dtype=torch.bool)
+                else:
+                    damaged_flag = damaged_flag.to(device=clean_peak.device)
+                gate_target = ((~damaged_flag.to(torch.bool)) &
+                               (corr_peak >= 0.9 * clean_peak)).to(clean_peak.dtype)
             # Feed this frame's max classification score to CodeTrack so the *next* frame's
             # memory admission (DTPTrack's update_criteria-style rule) has a causally valid
             # signal.  Detached: it is a selection statistic, not a loss term.
@@ -367,7 +433,7 @@ class GOLA_DINOv2(nn.Module):
             # The pre-denoise (post-refiner) tensor.  ``L_gain`` and the ``Error/d_before``
             # statistic need the *before* state of the recovery, and ``X_rec`` is exactly that:
             # the refiner's output before the diffusion-correction block touches it.
-            "recovered_pre_denoise": out["X_rec"],
+            "recovered_satr": out["X_final"],
             # The student's *input* token stream X_t (the corrupted search representation, before
             # any recovery).  ``d_input = d(X_t, X_clean)`` is the honest denominator for the whole
             # recovery claim: ``L_gain`` used to compare only ``X_rec`` against clean, which proves
@@ -375,12 +441,13 @@ class GOLA_DINOv2(nn.Module):
             # given".  The paper-level criterion is ``d_final < d_input``.
             "input_tokens": out["tokens"]["X_TIR"],
             "q": out["q"], "s": out["s"],
+            "syndrome_energy_before": out.get("syndrome_energy_before"),
+            "syndrome_energy_after": out.get("syndrome_energy_after"),
             # raw pre-sigmoid evidence: the diagnosis loss must be the autocast-safe
             # ``*_with_logits`` form, because ``binary_cross_entropy`` on a sigmoid output aborts
             # under AMP ("unsafe to autocast").
             "q_logits": out.get("q_logits"), "s_logits": out.get("s_logits"),
             "suspect_index": out["suspect_index"],
-            "meanvar": out["meanvar"],
             "preserve": out["preserve"],
             # supervision signals for the temporal memory and the template gate
             "corruption_mask": token_mask,
@@ -393,6 +460,7 @@ class GOLA_DINOv2(nn.Module):
             # parameters stay at exactly zero gradient.
             "trc_confidence": (out.get("memory") or {}).get("trc_confidence"),
             "c_t": out.get("c_t"),
+            "gate_target": gate_target,
             "motion_map_norm": out.get("motion_map_norm"),
             "motion_target": out.get("motion_target"),
             # One-shot syndrome calibration.  The diagnosis head exports the RAW pre-sigmoid
@@ -406,8 +474,10 @@ class GOLA_DINOv2(nn.Module):
                   "codetrack_extras": extras,
                   "codetrack": {k: v for k, v in out.items()
                                 if k in ("q", "s", "C_obs", "C_ref", "motion",
-                                         "alpha", "delta", "suspect_score", "c_t",
-                                         "uncertainty", "mean_topk_q", "max_q")}}
+                                         "alpha", "delta", "suspect_index", "suspect_score", "c_t",
+                                         "uncertainty", "mean_topk_q", "max_q", "decode_gate",
+                                         "syndrome_energy_before", "syndrome_energy_after")},
+                  "codetrack_pre": pre_recovery_head}
         return result
 
     def _z_feat(self, z: torch.Tensor, z_feat_mask: torch.Tensor):

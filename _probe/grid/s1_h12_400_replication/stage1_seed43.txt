@@ -1,0 +1,34 @@
+================================================================
+CodeTrack Stage 1 Report -- H12 seed43
+================================================================
+  [PASS] no NaN/Inf in loss   3199 steps
+  [PASS] grad_norm finite at accumulation boundaries   max=0.340
+  [PASS] cosine horizon traversed   peak 1.000e-03 -> 2.700e-05
+  [WARN] parameter deltas available   no before/after snapshot supplied
+  [PASS] diagnosis AUROC(q, corruption_mask) above chance   AUROC=0.7544
+  [PASS] diagnosis AUROC sanity floor (0.6)   AUROC=0.7544 -- sanity check only, not a paper claim
+  [PASS] q has not collapsed to a constant   q_std=2.800e-03
+  [FAIL] q separates damaged from untouched tokens   pos=0.7573 neg=0.7579
+  [PASS] recovery improves on its input (d_final < d_input)   d_input=0.0797 d_final=0.0723 gain_total=+0.0132 (need > 0.005)
+  [WARN] residual gate probed   gate value not supplied
+
+Metrics:
+  AUPRC(q, mask)               = 0.0902
+  AUROC(q, mask)               = 0.7544
+  Error/d_after                = 0.0723
+  Error/d_before               = 0.0792
+  Error/d_input                = 0.0797
+  Error/gain_refiner           = 0.0001
+  Error/gain_total             = 0.0132
+  lr_first                     = 0.0
+  lr_last                      = 2.7e-05
+  lr_max_seen                  = 0.001
+  lr_min_seen                  = 0.0
+  micro_steps_logged           = 3199.0
+  q_neg_mean                   = 0.7579
+  q_pos_mean                   = 0.7573
+  q_std                        = 0.0028
+  updates_logged               = 199.0
+
+FINAL: NO-GO
+================================================================

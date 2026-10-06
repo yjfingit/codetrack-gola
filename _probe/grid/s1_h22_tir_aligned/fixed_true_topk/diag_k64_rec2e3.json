@@ -1,0 +1,78 @@
+{
+  "probe": "diagnosis_direction_v1",
+  "checkpoint": "_probe/grid/s1_h22_tir_aligned/out/k64_rec2e3/GOLA-codetrack_s1-mixin-_grid_k64_rec2e3-2026.10.04-19.45.59-765396/checkpoint/epoch_00/model.bin",
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "tokens": 256,
+  "topk": 64,
+  "damage_fraction": 0.150390625,
+  "error_mean": 0.027666419744491577,
+  "error_std": 0.043670374900102615,
+  "q_mean": 0.19994454085826874,
+  "q_std": 0.00014483067207038403,
+  "clean_q_mean": 0.19994135200977325,
+  "clean_q_std": 0.00014544256555382162,
+  "clean_q_topk_gap": 0.0001007765531539917,
+  "q_logits_std": 0.0009057531715370715,
+  "s_std": 0.001033810549415648,
+  "candidates": {
+    "q": {
+      "auroc": 0.5606018900871277,
+      "overlap": 0.30373716354370117,
+      "topk_gap": 9.976327419281006e-05,
+      "score_std": 0.00014483067207038403
+    },
+    "neg_q": {
+      "auroc": 0.43938857316970825,
+      "overlap": 0.1457798331975937,
+      "topk_gap": 0.00021648406982421875,
+      "score_std": 0.00014483067207038403
+    },
+    "q_logits": {
+      "auroc": 0.5605995059013367,
+      "overlap": 0.30373716354370117,
+      "topk_gap": 0.0006239414215087891,
+      "score_std": 0.0009057531715370715
+    },
+    "neg_q_logits": {
+      "auroc": 0.43938618898391724,
+      "overlap": 0.1457798331975937,
+      "topk_gap": 0.0013537406921386719,
+      "score_std": 0.0009057531715370715
+    },
+    "s_to_token": {
+      "auroc": 0.6762645244598389,
+      "overlap": 0.503042459487915,
+      "topk_gap": 0.0002155268011847511,
+      "score_std": 0.0001850385160651058
+    },
+    "neg_s_to_token": {
+      "auroc": 0.32373547554016113,
+      "overlap": 0.11925073713064194,
+      "topk_gap": 0.00012050521763740107,
+      "score_std": 0.0001850385160651058
+    }
+  },
+  "check_corr": {
+    "mean_offdiag": 0.13913926482200623,
+    "median_offdiag": 0.24728816747665405,
+    "abs_mean_offdiag": 0.5361694097518921,
+    "max_abs_offdiag": 0.9938109517097473
+  }
+}

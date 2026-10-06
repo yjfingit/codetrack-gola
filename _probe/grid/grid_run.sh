@@ -69,7 +69,9 @@ run_trial() {
   for p in "${PAIRS[@]}"; do [[ -n "$p" ]] && kv+=("$p"); done
 
   # generate into the repo mixin dir (framework requires it there), keep a copy
-  if ! "$PY" "$PROJ/_probe/grid/grid_make_mixin.py" "$mixin_in_tree" "${kv[@]}" \
+  # Use the typed generator: S1 experiments include boolean/string overrides
+  # and per-parameter learning rates that the legacy generator cannot emit.
+  if ! "$PY" "$PROJ/_probe/grid/s1_r1/grid_make_mixin2.py" "$mixin_in_tree" "${kv[@]}" \
         > "$logf.gen" 2>&1; then
     log "gpu$gpu  $trial  CONFIG-FAIL"
     cat "$logf.gen" >&2

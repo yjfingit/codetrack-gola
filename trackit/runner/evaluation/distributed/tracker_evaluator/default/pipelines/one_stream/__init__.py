@@ -3,6 +3,8 @@
 # Add support for online template update
 
 from typing import Dict, Tuple, Callable, Any, Optional, List
+import json
+import os
 import numpy as np
 import torch
 from dataclasses import dataclass, field
@@ -172,6 +174,10 @@ class OneStreamTracker_Evaluation_MainPipeline(TrackerEvaluationPipeline):
         x_frame_indices = context.temporary_objects['x_frame_indices']
         x_cropping_params = context.temporary_objects['x_cropping_params']
 
+        # Optional per-frame CodeTrack telemetry.  It is deliberately outside the tracking
+        # path and only enabled by CODETRACK_DIAG_PATH, so normal evaluation is unchanged.
+        self._record_codetrack_diagnostics(model_outputs, context, task_ids, x_frame_indices)
+
         outputs = self.model_output_post_process(model_outputs)
         # shape: (num_tracking_sequence), dtype: torch.float
         all_predicted_score = outputs['confidence']
@@ -257,6 +263,125 @@ class OneStreamTracker_Evaluation_MainPipeline(TrackerEvaluationPipeline):
                                           predicted_mask, predicted_mask_on_full_search_image)
 
         assert context.result.is_all_submitted()
+
+    @staticmethod
+    def _record_codetrack_diagnostics(model_outputs, context, task_ids, frame_indices):
+        path = os.environ.get('CODETRACK_DIAG_PATH')
+        if not path:
+            return
+        detail_frames = {}
+        for item in os.environ.get('CODETRACK_DIAG_DETAIL_FRAMES', '').split(','):
+            if ':' in item:
+                name, frame = item.rsplit(':', 1)
+                try:
+                    detail_frames[name] = int(frame)
+                except ValueError:
+                    pass
+        code = model_outputs.get('codetrack') if isinstance(model_outputs, dict) else None
+        extras = model_outputs.get('codetrack_extras') if isinstance(model_outputs, dict) else None
+        if not isinstance(code, dict):
+            return
+
+        def cpu_tensor(value):
+            if not torch.is_tensor(value):
+                return None
+            return value.detach().float().cpu()
+
+        q = cpu_tensor(code.get('q'))
+        s = cpu_tensor(code.get('s'))
+        delta = cpu_tensor(code.get('delta'))
+        alpha = cpu_tensor(code.get('alpha'))
+        suspect = code.get('suspect_index')
+        suspect = suspect.detach().long().cpu() if torch.is_tensor(suspect) else None
+        motion_map = cpu_tensor(extras.get('motion_map_norm')) if isinstance(extras, dict) else None
+        uncertainty = cpu_tensor(code.get('uncertainty'))
+        c_t = cpu_tensor(code.get('c_t'))
+        topk_q = cpu_tensor(code.get('mean_topk_q'))
+        max_q = cpu_tensor(code.get('max_q'))
+        syndrome_before = cpu_tensor(code.get('syndrome_energy_before'))
+        syndrome_after = cpu_tensor(code.get('syndrome_energy_after'))
+        if q is None or s is None:
+            return
+        selected = torch.zeros_like(q, dtype=torch.bool)
+        if suspect is not None and suspect.ndim == 2:
+            selected.scatter_(1, suspect, True)
+
+        def scalar(x, i):
+            if x is None:
+                return None
+            x = x.reshape(x.shape[0], -1)
+            return float(x[i].mean()) if i < x.shape[0] else None
+
+        rows = []
+        for i, task_id in enumerate(task_ids):
+            if i >= q.shape[0]:
+                break
+            seq = context.all_tracks[task_id].sequence_info
+            qi, si = q[i], s[i]
+            row = {
+                'sequence': seq.sequence_name,
+                'frame_index': int(frame_indices[i]),
+                'q_mean': float(qi.mean()),
+                'q_std': float(qi.std(unbiased=False)),
+                'q_max': float(qi.max()),
+                'syndrome_mean': float(si.mean()),
+                'syndrome_std': float(si.std(unbiased=False)),
+                'syndrome_max': float(si.max()),
+                'selected_fraction': float(selected[i].float().mean()),
+                'selected_q_mean': float(qi[selected[i]].mean()) if bool(selected[i].any()) else 0.0,
+                'delta_norm_all': float(delta[i].norm(dim=-1).mean())
+                    if delta is not None and delta.ndim == 3 else None,
+                # SATR returns delta/alpha only for its K selected tokens (B, K, C)/(B, K),
+                # while q and selected describe the full N-token grid.
+                'delta_norm_selected': float(delta[i].norm(dim=-1).mean())
+                    if delta is not None and delta.ndim == 3 else 0.0,
+                'alpha_mean': scalar(alpha, i),
+                'alpha_selected_mean': float(alpha[i].mean())
+                    if alpha is not None and alpha.ndim == 2 else None,
+                'uncertainty': scalar(uncertainty, i),
+                'c_t': scalar(c_t, i),
+                'mean_topk_q': scalar(topk_q, i),
+                'max_q_output': scalar(max_q, i),
+                'syndrome_energy_before': scalar(syndrome_before, i),
+                'syndrome_energy_after': scalar(syndrome_after, i),
+            }
+            if motion_map is not None:
+                mm = motion_map[i].reshape(-1).clamp_min(1e-8)
+                row['motion_entropy'] = float(-(mm * mm.log()).sum())
+                row['motion_max'] = float(mm.max())
+            if isinstance(extras, dict):
+                rel = cpu_tensor(extras.get('frame_reliability'))
+                corrupt = cpu_tensor(extras.get('corruption_fraction'))
+                row['frame_reliability'] = scalar(rel, i)
+                row['corruption_fraction'] = scalar(corrupt, i)
+            # Full tensors are written only for explicitly requested sequence/frame pairs.
+            # This keeps routine telemetry compact while enabling publication-style heatmaps.
+            if detail_frames.get(seq.sequence_name) == int(frame_indices[i]):
+                score_map = model_outputs.get('score_map') if isinstance(model_outputs, dict) else None
+                boxes = model_outputs.get('boxes') if isinstance(model_outputs, dict) else None
+                pre = model_outputs.get('codetrack_pre') if isinstance(model_outputs, dict) else None
+                row['q_values'] = qi.tolist()
+                row['syndrome_values'] = si.tolist()
+                row['selected_indices'] = suspect[i].tolist() if suspect is not None else []
+                if delta is not None and delta.ndim == 3:
+                    row['delta_norm_values'] = delta[i].norm(dim=-1).tolist()
+                if torch.is_tensor(motion_map):
+                    row['motion_map_values'] = motion_map[i].reshape(-1).tolist()
+                if torch.is_tensor(score_map):
+                    row['score_map_values'] = score_map.detach().float().cpu()[i].tolist()
+                if torch.is_tensor(boxes):
+                    row['box_values'] = boxes.detach().float().cpu()[i].tolist()
+                if isinstance(pre, dict):
+                    if torch.is_tensor(pre.get('score_map')):
+                        row['pre_score_map_values'] = pre['score_map'].detach().float().cpu()[i].tolist()
+                    if torch.is_tensor(pre.get('boxes')):
+                        row['pre_box_values'] = pre['boxes'].detach().float().cpu()[i].tolist()
+            rows.append(row)
+        if rows:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, 'a', encoding='utf-8') as fh:
+                for row in rows:
+                    fh.write(json.dumps(row, ensure_ascii=True) + '\n')
 
     def do_custom_update(self, model, raw_model, context):
         # CodeTrack block 6 (template protection): the model exposes a per-frame ``confidence``

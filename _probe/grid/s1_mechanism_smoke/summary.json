@@ -1,0 +1,78 @@
+[
+  {
+    "trial": "gpu2_no_denoiser",
+    "steps": 0,
+    "loss_last": 0.0001,
+    "loss_min": -0.0,
+    "loss_first": -0.0,
+    "diag": {
+      "Loss/diag": 0.2374,
+      "Loss/rec": 0.0259,
+      "Loss/gain": 0.0574,
+      "Error/q_std": 0.0001,
+      "Error/d_input": 0.1441,
+      "Error/d_after": 0.1439,
+      "Error/gain_total": 0.0001,
+      "Error/q_mean": 0.1996
+    },
+    "nan": 7,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "gpu4_topk8",
+    "steps": 0,
+    "loss_last": 0.0006,
+    "loss_min": -0.0009,
+    "loss_first": -0.0,
+    "diag": {
+      "Loss/diag": 0.2381,
+      "Loss/rec": 0.0342,
+      "Loss/gain": 0.0478,
+      "Error/q_std": 0.0001,
+      "Error/d_input": 0.1221,
+      "Error/d_after": 0.1211,
+      "Error/gain_total": 0.0006,
+      "Error/q_mean": 0.1997
+    },
+    "nan": 7,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "gpu1_baseline",
+    "steps": 0,
+    "loss_last": 0.0008,
+    "loss_min": -0.0009,
+    "loss_first": 0.0,
+    "diag": {
+      "Loss/diag": 0.2381,
+      "Loss/rec": 0.0318,
+      "Loss/gain": 0.0473,
+      "Error/q_std": 0.0001,
+      "Error/d_input": 0.1221,
+      "Error/d_after": 0.1209,
+      "Error/gain_total": 0.0008,
+      "Error/q_mean": 0.1997
+    },
+    "nan": 7,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "gpu3_small_up",
+    "steps": 0,
+    "loss_last": 0.0011,
+    "loss_min": -0.0005,
+    "loss_first": 0.0001,
+    "diag": {
+      "Loss/diag": 0.2381,
+      "Loss/rec": 0.0307,
+      "Loss/gain": 0.0471,
+      "Error/q_std": 0.0001,
+      "Error/d_input": 0.1221,
+      "Error/d_after": 0.1206,
+      "Error/gain_total": 0.0011,
+      "Error/q_mean": 0.1997
+    },
+    "nan": 7,
+    "grad_norm_last": null
+  }
+]

@@ -1,0 +1,68 @@
+{
+  "probe": "diagnosis_direction_v1",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "tokens": 256,
+  "topk": 32,
+  "damage_fraction": 0.150390625,
+  "error_mean": 0.027666419744491577,
+  "error_std": 0.043670374900102615,
+  "q_mean": 0.23174665868282318,
+  "q_std": 0.0013318429701030254,
+  "q_logits_std": 0.007490810472518206,
+  "s_std": 0.04067688062787056,
+  "candidates": {
+    "q": {
+      "auroc": 0.25786176323890686,
+      "overlap": 0.016085240989923477,
+      "topk_gap": 0.00167788565158844,
+      "score_std": 0.0013318429701030254
+    },
+    "neg_q": {
+      "auroc": 0.7421466112136841,
+      "overlap": 0.2923144996166229,
+      "topk_gap": 0.002377539873123169,
+      "score_std": 0.0013318429701030254
+    },
+    "q_logits": {
+      "auroc": 0.25786057114601135,
+      "overlap": 0.016085240989923477,
+      "topk_gap": 0.009414315223693848,
+      "score_std": 0.007490810472518206
+    },
+    "neg_q_logits": {
+      "auroc": 0.7421454191207886,
+      "overlap": 0.2923144996166229,
+      "topk_gap": 0.013392210006713867,
+      "score_std": 0.007490810472518206
+    },
+    "s_to_token": {
+      "auroc": 0.25786057114601135,
+      "overlap": 0.016085240989923477,
+      "topk_gap": 0.009414196014404297,
+      "score_std": 0.00749081140384078
+    },
+    "neg_s_to_token": {
+      "auroc": 0.7421442270278931,
+      "overlap": 0.2923144996166229,
+      "topk_gap": 0.013392329216003418,
+      "score_std": 0.00749081140384078
+    }
+  },
+  "check_corr": {
+    "mean_offdiag": -0.006840916816145182,
+    "median_offdiag": -0.01679793745279312,
+    "abs_mean_offdiag": 0.35018011927604675,
+    "max_abs_offdiag": 0.9687563180923462
+  }
+}

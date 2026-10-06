@@ -35,6 +35,7 @@ already-normalised ``F_L`` directly.  Recorded in docs/setup.md.)
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, Optional
 
 import torch
@@ -42,9 +43,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import CodeTrackConfig
-from .ecc import ParityCheckMatrix, SyndromeDiagnosis
+from .ecc import ParityCheckMatrix, SyndromeDiagnosis, NeuralBPSyndromeDiagnosis
 from .motion import KalmanMotionPrior, TemporalMemory
-from .recovery import H_RoutedSparseRefiner, MeanVarCompletion, NoiseModulatedDenoiser
+from .recovery import SATRRecovery
 from .template import TemplateProtectionGate
 
 
@@ -84,12 +85,21 @@ class CodeTrack(nn.Module):
             min_col_degree=cfg.h_min_col_degree, grid=cfg.grid,
             locality_window=cfg.h_locality_window, locality_wrap=cfg.h_locality_wrap,
             free_edge_frac=cfg.h_free_edge_frac, seed=cfg.h_seed)
-        self.diagnosis = SyndromeDiagnosis(
+        diagnosis_cls = (NeuralBPSyndromeDiagnosis
+                         if cfg.decoder_type == "neural_bp" else SyndromeDiagnosis)
+        diagnosis_kwargs = dict(
             dim=cfg.dim, mid_dim=cfg.mid_dim, num_checks=cfg.num_checks,
             num_variables=cfg.x_len, syndrome_hidden=cfg.syndrome_hidden,
-            detection_prior=cfg.detection_prior, use_cos=cfg.syndrome_cos,
-            syndrome_logit_gain=cfg.syndrome_logit_gain,
-            syndrome_gain_calibration=cfg.syndrome_gain_calibration)
+            detection_prior=cfg.detection_prior)
+        if diagnosis_cls is SyndromeDiagnosis:
+            diagnosis_kwargs.update(use_cos=cfg.syndrome_cos,
+                                    syndrome_logit_gain=cfg.syndrome_logit_gain,
+                                    syndrome_gain_calibration=cfg.syndrome_gain_calibration)
+        else:
+            diagnosis_kwargs.update(bp_iterations=cfg.bp_iterations,
+                                    bp_damping=cfg.bp_damping,
+                                    explicit_syndrome_weight=cfg.explicit_syndrome_weight)
+        self.diagnosis = diagnosis_cls(**diagnosis_kwargs)
         # variable -> variable relation used for H-routing (from the same incidence)
         # ``persistent=False`` on purpose: upstream ``GOLA_DINOv2.state_dict`` walks every
         # key and calls ``get_parameter`` on it, which raises for a persistent buffer it does
@@ -112,26 +122,15 @@ class CodeTrack(nn.Module):
         self.template_pool = nn.Sequential(
             nn.Linear(cfg.dim, cfg.dim), nn.GELU(), nn.Linear(cfg.dim, cfg.dim))
 
-        # ---- block 5: recovery + denoising ------------------------------------
-        self.refiner = H_RoutedSparseRefiner(
+        # ---- block 5: SATR Tanner recovery ------------------------------------
+        self.satr = SATRRecovery(
             dim=cfg.dim, hidden=cfg.refiner_hidden, heads=cfg.refiner_heads,
             num_neighbours=cfg.num_neighbours, memory_dim=cfg.memory_dim,
             dropout=cfg.refiner_dropout, residual_gate_init=cfg.residual_gate_init,
             motion_bias_scale=cfg.motion_bias_scale, up_init_std=cfg.up_init_std,
-            motion_bias_normalise=cfg.motion_bias_normalise)
+            motion_bias_normalise=cfg.motion_bias_normalise, rounds=cfg.satr_rounds)
 
-        # condition for the denoiser = [H-routed context (bottleneck) | aux tokens],
-        # then projected back to the token dim so it can also be scattered into token
-        # space for the *other* tokens (which is how the denoiser sees the evidence).
-        self.condition_proj = nn.Linear(cfg.refiner_hidden + cfg.dim, cfg.dim)
-        self.denoiser = NoiseModulatedDenoiser(
-            dim=cfg.dim, hidden=cfg.diffusion_hidden, heads=cfg.diffusion_heads,
-            steps=cfg.diffusion_steps, num_checks=cfg.num_checks, cond_dim=cfg.dim,
-            noise_schedule_power=cfg.noise_schedule_power,
-            write_schedule=getattr(cfg, "diffusion_write_schedule", "ramp"),
-            residual_gate_init=cfg.residual_gate_init,
-            up_init_std=cfg.up_init_std) if cfg.diffusion_enabled else None
-        self.meanvar = MeanVarCompletion(dim=cfg.dim, hidden=cfg.diffusion_hidden)
+        # SATR owns all correction rounds. There is no dense denoiser/diffusion path.
 
         # ---- block 6: template protection -------------------------------------
         self.template_gate = TemplateProtectionGate(
@@ -271,8 +270,28 @@ class CodeTrack(nn.Module):
         ``corruption_mask`` (B, N) bool, the corruption the data pipeline applied.
         """
         b = F_L.shape[0]
+        # Training pairs are sampled independently, so carrying Kalman/memory state from one
+        # random batch into the next creates physically meaningless transitions and can make the
+        # covariance solve unstable.  Recurrent state is reserved for causal sequence inference;
+        # training still exercises the motion and memory heads on the current frame.
+        if self.training and update_state:
+            self.reset_sequence()
+        # Dynamic evaluation scheduling may emit a shorter final batch. All recurrent
+        # and template-gate state is batch-shaped; carrying the previous layout causes
+        # stale scores/boxes to be reshaped against the new batch.
+        if self._prev_score is not None and self._prev_score.shape[0] != b:
+            self.reset_sequence()
         toks = self._split(F_L)
         X_t, X_aux = toks["X_TIR"], toks["X_RGB"]        # baseline feature / aux evidence
+        ablate_aux = os.environ.get("CODETRACK_ABLATE_AUX", "0") == "1"
+        ablate_motion = os.environ.get("CODETRACK_ABLATE_MOTION", "0") == "1"
+        ablate_memory = os.environ.get("CODETRACK_ABLATE_MEMORY", "0") == "1"
+        ablate_bp = os.environ.get("CODETRACK_ABLATE_BP", "0") == "1"
+        ablate_satr = os.environ.get("CODETRACK_ABLATE_SATR", "0") == "1"
+        if ablate_aux:
+            # Counterfactual: remove cross-modal side information while keeping the tracked
+            # TIR stream and all other state identical.
+            X_aux = torch.zeros_like(X_aux)
 
         # ---- template context (initial + online, both modalities) --------------
         template_tokens = torch.cat(
@@ -283,7 +302,7 @@ class CodeTrack(nn.Module):
         motion_out: Dict[str, torch.Tensor] = {}
         pending_obs: Optional[torch.Tensor] = None
         pending_conf: Optional[torch.Tensor] = None
-        if self.motion is not None:
+        if self.motion is not None and not ablate_motion:
             # ---- D2: predict-only, then observe AFTER this frame is consumed --------
             # The order here is what makes the block causal.  ``observe()`` used to run
             # *before* the prior map was built, so M_t was a function of the current frame's
@@ -331,21 +350,28 @@ class CodeTrack(nn.Module):
         diag = self.diagnosis(X_t, X_aux, H_bar, template_context=template_ctx)
         out_s = diag["s"]
         q = diag["q"]
+        if ablate_bp and "symbol_logits" in diag:
+            # Counterfactual decoder: retain the learned per-token symbol evidence but remove
+            # Tanner check-to-variable messages. This isolates BP from the syndrome encoder.
+            q = torch.sigmoid(diag["symbol_logits"] + self.diagnosis.vote_bias.view(1, -1))
+            diag["q"] = q
+            diag["bp_messages"] = None
 
         # ---- block 4b: temporal memory ---------------------------------------
         # `reliability` = 1 - q: a token the diagnosis considers healthy is reliable.
         reliability = 1.0 - q
         memory_readout = None
         prior_tokens = None
-        if self.memory is not None:
+        if self.memory is not None and not ablate_memory:
             mem_state = getattr(self, "_state", {"memory": None, "memory_rel": None})
             # Target mask on the search grid, derived from the observed box.  It is only a
             # *pooling* mask for eq. 1, never a loss target, and a ground-truth box cannot
             # leak into the head through it (the head sees X_final, which the pooled summary
             # reaches only through the reliability gate).
             target_mask = None
-            if gt_box_xywh is not None and image_size is not None:
-                target_mask = self._search_target_mask(gt_box_xywh, image_size, b)
+            # Recovery must see only observable frame/history features.  The target box
+            # remains available to the criterion as a label, but never controls this readout.
+            target_mask = None
             # Without an observed box, pool using predicted reliability inside memory.
             # The injector's mask is a supervision label, never a recovery input.
             # Admission uses the *previous* frame's tracking score.  The head has not run
@@ -372,75 +398,134 @@ class CodeTrack(nn.Module):
         # not as a pooled vector: their ablation shows a decoupled prior-token channel beats
         # concatenating the summaries into the visual token stream (-0.9 AUC), because it
         # guides without contaminating the raw features.
-        rec = self.refiner(
-            X_t=X_t, X_aux=X_aux, q=q, neighbour_index=self.neighbour_index,
-            template_pool=template_ctx, memory_readout=prior_tokens,
-            motion_map=motion_map, topk=self.cfg.topk_tokens)
-        X_rec = rec["X_rec"]
+        # Recovery is a relative localization task. The calibrated probability level is useful
+        # to the diagnosis loss, but its clean and damaged frame means are nearly identical;
+        # subtracting a scalar prior either writes everywhere or nowhere. Standardize within
+        # each frame and restrict writes to the declared TopK support. This preserves q's raw
+        # probability semantics while making the recovery gate depend only on evidence ranking.
+        q_mu = q.mean(dim=-1, keepdim=True)
+        q_sd = q.std(dim=-1, keepdim=True, unbiased=False).clamp(min=1e-6)
+        q_relative = torch.sigmoid((q - q_mu) / q_sd)
+        route_k = min(int(self.cfg.topk_tokens), q.shape[-1])
+        route_idx = q.topk(route_k, dim=-1).indices
+        route_support = torch.zeros_like(q)
+        route_support.scatter_(1, route_idx, 1.0)
+        # Inference uses an abstention rule from reliable communication: if the
+        # detector has no absolute evidence of an error, decode nothing and preserve
+        # the original GOLA token exactly. Training keeps soft Top-K routing so the
+        # detector and SATR receive gradients.
+        abstain_enabled = bool(self.cfg.abstain_enabled) or os.environ.get(
+            "CODETRACK_ABSTAIN_THRESHOLD") is not None
+        abstain_threshold = float(os.environ.get(
+            "CODETRACK_ABSTAIN_THRESHOLD", self.cfg.abstain_threshold))
+        if (not self.training) and abstain_enabled:
+            route_support = route_support * (q >= abstain_threshold).to(q.dtype)
+        # Optional out-of-view safeguard.  A Kalman prediction whose box is close to the
+        # search-region boundary is not reliable side information: carrying history into that
+        # frame can manufacture a target after it has left the image.  The margin is expressed
+        # as a fraction of the search-region width/height and is disabled by default.
+        edge_margin = float(os.environ.get(
+            "CODETRACK_EDGE_REJECT_MARGIN", str(self.cfg.edge_reject_margin)))
+        if (not self.training) and edge_margin > 0.0 and image_size is not None \
+                and motion_out.get("motion_box") is not None:
+            mb = motion_out["motion_box"]
+            sz = image_size.to(mb.dtype)
+            x1, y1 = mb[:, 0], mb[:, 1]
+            x2, y2 = x1 + mb[:, 2], y1 + mb[:, 3]
+            margin_x, margin_y = sz[:, 0] * edge_margin, sz[:, 1] * edge_margin
+            edge_risk = (x1 < margin_x) | (y1 < margin_y) | \
+                        (x2 > sz[:, 0] - margin_x) | (y2 > sz[:, 1] - margin_y)
+            route_support = route_support * (~edge_risk).to(q.dtype).unsqueeze(-1)
 
-        # ---- block 5b: noise-modulated denoising -----------------------------
-        # condition = [H-routed context scattered into token space | aux tokens].
-        # ``context`` is the refiner's 256-d bottleneck, so it is projected by the same
-        # layer that maps [context | aux] to the token dim, and only the suspect rows
-        # carry a non-zero context (healthy tokens get no routed evidence).
-        suspect = rec["suspect_index"]
-        bidx = torch.arange(b, device=X_t.device)[:, None].expand_as(suspect)
-        ctx_scatter = torch.zeros_like(X_t)
-        # dtype must match the destination: under AMP autocast the projection returns fp16
-        # while ``X_t`` may still be fp32 (or vice versa), and an in-place scatter demands
-        # an exact match rather than casting.
-        ctx_proj = self.condition_proj(
-            torch.cat([rec["context"], X_aux[bidx, suspect]], dim=-1))
-        ctx_scatter[bidx, suspect] = ctx_proj.to(ctx_scatter.dtype)
-        ctx_zero = torch.zeros(b, X_t.shape[1], rec["context"].shape[-1],
-                               device=X_t.device, dtype=X_t.dtype)
-        condition = self.condition_proj(torch.cat([ctx_zero, X_aux], dim=-1)) + ctx_scatter
-
-        # Naming is deliberately explicit: ``q`` is the per-token ERROR probability (block 3),
-        # so ``trust = 1 - q`` is how healthy a token is.  The previous single name ``alpha``
-        # carried "trust" but was multiplied into the denoiser's *write-back*, which inverted
-        # the selective-recovery semantics (healthy tokens got corrected most, damaged ones
-        # least).  Two names make that mistake impossible to repeat.
-        token_error = q
-        token_trust = (1.0 - q)
-        # Completion predicts clean moments and conditions recovery, as well as L_align.
-        # Previously this was a post-recovery auxiliary head with no output consumer.
-        mv = self.meanvar(X_rec)
-        if self.denoiser is not None:
-            # frame-level condition terms: syndrome s (M), motion (map mean + u_t),
-            # temporal memory read-out (pooled to memory_dim)
-            motion_cond = None
-            if motion_map is not None:
-                # Mean of a unit-mass map is always 1/N.  Entropy instead communicates
-                # spatial concentration without changing the checkpoint's two-value width.
-                pm = motion_map.reshape(b, -1).clamp(min=1e-8)
-                mm = -(pm * pm.log()).sum(dim=-1, keepdim=True) / math.log(pm.shape[-1])
-                uu = (uncertainty.reshape(b, 1) if uncertainty is not None
-                      else torch.zeros(b, 1, device=X_t.device, dtype=X_t.dtype))
-                motion_cond = torch.cat([mm, uu], dim=-1)             # (B, 2)
-            mem_cond = None
-            if prior_tokens is not None:
-                # (B, F, memory_dim) -> (B, memory_dim): the frame axis is reduced, and the
-                # result stays at memory_dim so it matches the denoiser's condition width.
-                mem_cond = prior_tokens.mean(dim=1)
-            # Both gates are passed explicitly and both are q.  The noise gate in particular
-            # MUST be passed: while the parameter defaulted inside the module, the caller never
-            # supplied it, so ``1 - alpha`` evaluated to 0 and no token ever received noise --
-            # the "noise-modulated" half of block 5b was silently inert.  Making the argument
-            # explicit (and removing ``alpha``) means the failure cannot recur silently.
-            den = self.denoiser(X_rec, condition, syndrome=out_s,
-                                completion=mv,
-                                motion=motion_cond, memory=mem_cond,
-                                token_error=token_error.unsqueeze(-1),
-                                token_trust=token_trust.unsqueeze(-1),
-                                noise_gate=token_error.unsqueeze(-1),
-                                noise_weak=self.cfg.noise_weak_std,
-                                noise_strong=self.cfg.noise_strong_std,
-                                strong_prob=self.cfg.noise_strong_prob)
-            X_final = den["X_denoised"]
+        # Reuse the trained template-trust gate as an optional frame-level decode gate.  This
+        # keeps one reliability estimator for both template admission and ECC decoding.  The
+        # current-frame recovery confidence is unavailable before SATR, so it is set to zero;
+        # q, the previous score, and motion uncertainty remain causal inputs.  Disabled unless
+        # explicitly requested for an ablation or a calibrated deployment run.
+        decode_gate = None
+        decode_gate_threshold = os.environ.get("CODETRACK_DECODE_GATE_THRESHOLD")
+        decode_gate_enabled = bool(self.cfg.decode_gate_enabled) or decode_gate_threshold is not None
+        if (not self.training) and decode_gate_enabled and self.template_gate is not None:
+            gate_score = tracking_score if tracking_score is not None else self._prev_score
+            if gate_score is None:
+                gate_score = q.new_zeros(b)
+            decode_gate = self.template_gate(
+                score=gate_score.detach(), q=q, uncertainty=uncertainty,
+                recovery_confidence=q.new_zeros(b), topk=self.cfg.topk_tokens)["c_t"]
+            route_support = route_support * (
+                decode_gate >= float(self.cfg.decode_gate_threshold if decode_gate_threshold is None
+                                     else decode_gate_threshold)).to(q.dtype).unsqueeze(-1)
+        qmax_threshold = os.environ.get("CODETRACK_QMAX_GATE_THRESHOLD")
+        if (not self.training) and qmax_threshold is not None:
+            frame_has_evidence = q.max(dim=-1).values >= float(qmax_threshold)
+            route_support = route_support * frame_has_evidence.to(q.dtype).unsqueeze(-1)
+        # Optional target-existence safeguard.  A parity violation is not sufficient evidence
+        # for decoding when the base tracker no longer sees a target: history/Kalman can still
+        # explain the syndrome after an object leaves the search image.  This gate is deliberately
+        # based on the *unmodified* GOLA response and is only enabled for calibrated inference
+        # probes, so it cannot leak labels into training or silently change the default recipe.
+        response_threshold = os.environ.get("CODETRACK_RESPONSE_GATE_THRESHOLD")
+        base_peak_for_route = None
+        if (not self.training) and response_threshold is not None and self.head is not None:
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                base_for_route = self.head(X_t.float())
+                base_peak_for_route = base_for_route["score_map"].float().flatten(1).sigmoid().amax(dim=-1)
+            route_support = route_support * (
+                base_peak_for_route >= float(response_threshold)).to(q.dtype).unsqueeze(-1)
+        q_route = q_relative * route_support
+        if ablate_satr:
+            rec = {"X_rec": X_t, "suspect_index": route_idx,
+                   "suspect_score": q_route.gather(1, route_idx),
+                   "delta": torch.zeros(b, route_k, self.dim, device=X_t.device, dtype=X_t.dtype),
+                   "alpha": q_route.gather(1, route_idx)}
         else:
-            den = {"X_denoised": X_rec, "step_preds": []}
-            X_final = X_rec
+            reliability_scale = float(os.environ.get("CODETRACK_TANNER_RELIABILITY_SCALE", "0.0"))
+            rec = self.satr(
+                X_t=X_t, X_aux=X_aux, q=q_route, neighbour_index=self.neighbour_index,
+                H_bar=H_bar, bp_messages=diag.get("bp_messages"), syndrome=out_s,
+                template_pool=template_ctx, memory_readout=prior_tokens,
+                motion_map=motion_map, topk=self.cfg.topk_tokens,
+                neighbour_q=q if reliability_scale != 0.0 else None,
+                reliability_bias_scale=reliability_scale)
+        X_rec = rec["X_rec"]
+        recovery_scale = float(os.environ.get("CODETRACK_RECOVERY_SCALE", "1.0"))
+        if (not self.training) and recovery_scale != 1.0:
+            X_rec = X_t + recovery_scale * (X_rec - X_t)
+        # Selective correction safeguard inspired by selective propagation: accept a decoded
+        # feature only when the original tracking head's peak response does not decrease.
+        # This is inference-only and disabled by default; it prevents a low-confidence SATR
+        # update from replacing a usable baseline prediction.
+        accept_delta = os.environ.get("CODETRACK_ACCEPT_SCORE_DELTA")
+        accept_enabled = bool(self.cfg.accept_enabled) or accept_delta is not None
+        if (not self.training) and accept_enabled and self.head is not None:
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                base_head = (self.head(X_t.float()) if base_peak_for_route is None
+                             else base_for_route)
+                rec_head = self.head(X_rec.float())
+                base_peak = base_head["score_map"].float().flatten(1).sigmoid().amax(dim=-1)
+                rec_peak = rec_head["score_map"].float().flatten(1).sigmoid().amax(dim=-1)
+                accept = rec_peak >= base_peak + float(
+                    self.cfg.accept_score_delta if accept_delta is None else accept_delta)
+            X_rec = torch.where(accept.view(b, 1, 1), X_rec, X_t)
+
+        # SATR has already completed its sparse Tanner message rounds. No dense
+        # denoiser or diffusion rewrite follows the correction.
+        suspect = rec["suspect_index"]
+        X_final = X_rec
+        den = {"X_denoised": X_final, "step_preds": []}
+        mv = None
+
+        # Post-decode parity evidence.  This is the visual analogue of checking whether a
+        # channel decoder's output is back in the code space.  It is exposed for diagnostics and
+        # can be enabled as a training loss; default inference behavior is unchanged.
+        check_before = (diag["C_obs"] - diag["C_ref"]).pow(2).mean(dim=-1).sqrt()
+        U_after = self.diagnosis.W_x(X_final)
+        R_after = self.diagnosis.W_r(X_aux)
+        if template_ctx is not None:
+            R_after = R_after + self.diagnosis.template_ctx(template_ctx).unsqueeze(1)
+        C_after = torch.einsum("mn,bnd->bmd", H_bar, U_after)
+        C_ref_after = torch.einsum("mn,bnd->bmd", H_bar, R_after)
+        check_after = (C_after - C_ref_after).pow(2).mean(dim=-1).sqrt()
 
         # ---- identity preservation on the tokens recovery was NOT asked to touch ----------
         # The anchor used to be ``~corruption_mask`` (the injector's ground truth), which does not
@@ -465,7 +550,8 @@ class CodeTrack(nn.Module):
 
         # ---- block 6: template protection ------------------------------------
         gate_out: Dict[str, torch.Tensor] = {}
-        if self.template_gate is not None:
+        disable_template_gate = os.environ.get("CODETRACK_ABLATE_TEMPLATE_GATE", "0") == "1"
+        if self.template_gate is not None and not disable_template_gate:
             score = tracking_score
             if score is None:
                 score = self._prev_score
@@ -514,7 +600,10 @@ class CodeTrack(nn.Module):
             "X_final": X_final,
             "X_rec": X_rec,
             "q": q, "s": diag["s"], "s_logits": diag["s_logits"], "q_logits": diag["q_logits"],
+            "syndrome_pending_calibration": diag.get("syndrome_pending_calibration"),
             "C_obs": diag["C_obs"], "C_ref": diag["C_ref"],
+            "syndrome_energy_before": check_before,
+            "syndrome_energy_after": check_after,
             "U": diag["U"], "R": diag["R"], "H_bar": H_bar,
             "suspect_index": suspect, "suspect_score": rec["suspect_score"],
             "delta": rec["delta"], "alpha": rec["alpha"],
@@ -528,8 +617,9 @@ class CodeTrack(nn.Module):
             # thing about it.
             "was_corrupted": _merge_corruption_flags(was_corrupted, image_corruption_mask),
             "motion_map_norm": motion_map,
+            "decode_gate": decode_gate,
             "motion_target": motion_target,
-            "meanvar": mv, "preserve": preserve,
+            "preserve": preserve,
             "denoise_steps": den["step_preds"],
             **gate_out,
         }

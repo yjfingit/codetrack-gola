@@ -1,0 +1,80 @@
+{
+  "mode": "learn",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "steps": 200,
+  "lr": 0.001,
+  "train_groups": "all",
+  "source_package": "None",
+  "d_input": 0.07398319244384766,
+  "source_file": "/home/yangjuanfeng/lab/projects/gola-CodeTrack/codetrack/__init__.py",
+  "trainable_tensors": 105,
+  "trainable_parameters": 8122193,
+  "history": [
+    {
+      "step": 0,
+      "loss": 0.07977420091629028,
+      "d_after": 0.06934856623411179,
+      "q_std": 0.00015364811406470835
+    },
+    {
+      "step": 25,
+      "loss": 0.022339927032589912,
+      "d_after": 0.021867459639906883,
+      "q_std": 0.0018373054917901754
+    },
+    {
+      "step": 50,
+      "loss": 0.013114171102643013,
+      "d_after": 0.012936062179505825,
+      "q_std": 0.002422245219349861
+    },
+    {
+      "step": 75,
+      "loss": 0.008704333566129208,
+      "d_after": 0.008572492748498917,
+      "q_std": 0.0029981774277985096
+    },
+    {
+      "step": 100,
+      "loss": 0.006594838574528694,
+      "d_after": 0.006456168368458748,
+      "q_std": 0.003400573041290045
+    },
+    {
+      "step": 125,
+      "loss": 0.004627842456102371,
+      "d_after": 0.004574470221996307,
+      "q_std": 0.003728269599378109
+    },
+    {
+      "step": 150,
+      "loss": 0.003635105211287737,
+      "d_after": 0.0036136871203780174,
+      "q_std": 0.00399748096242547
+    },
+    {
+      "step": 175,
+      "loss": 0.0027256105095148087,
+      "d_after": 0.0027308680582791567,
+      "q_std": 0.004248516634106636
+    },
+    {
+      "step": 199,
+      "loss": 0.002188015729188919,
+      "d_after": 0.0021907822228968143,
+      "q_std": 0.00447978125885129
+    }
+  ],
+  "improvement": 0.06715778401121497
+}

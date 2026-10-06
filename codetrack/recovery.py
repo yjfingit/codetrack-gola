@@ -35,14 +35,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class H_RoutedSparseRefiner(nn.Module):
-    """One-step residual recovery over the TopK suspects."""
+class SATRRecovery(nn.Module):
+    """Syndrome-adaptive Tanner recovery with unfolded message rounds.
+
+    The fixed H-neighbour route is the Tanner graph. Each round exchanges a
+    variable message with H-neighbours while conditioning the message update on
+    check evidence and the motion prior. Only suspect variables receive a residual.
+    """
 
     def __init__(self, dim: int = 768, hidden: int = 256, heads: int = 4,
                  num_neighbours: int = 8, template_dim: Optional[int] = None,
                  memory_dim: int = 128, dropout: float = 0.0,
                  residual_gate_init: float = 0.0, motion_bias_scale: float = 0.5,
-                 up_init_std: float = 0.02, motion_bias_normalise: bool = True):
+                 up_init_std: float = 0.02, motion_bias_normalise: bool = True,
+                 rounds: int = 3):
         super().__init__()
         self.dim = dim
         self.hidden = hidden
@@ -51,10 +57,11 @@ class H_RoutedSparseRefiner(nn.Module):
         self.memory_dim = memory_dim
         self.motion_bias_scale = float(motion_bias_scale)
         self.motion_bias_normalise = bool(motion_bias_normalise)
+        self.rounds = max(1, int(rounds))
 
         # condition = [ K_n neighbours (flattened) | X_aux_i | template | memory | q_i ]
         neighbour_dim = dim * num_neighbours
-        cond_in = neighbour_dim + dim + dim + memory_dim + 1
+        cond_in = neighbour_dim + dim + dim + memory_dim + 4
         self.down = nn.Sequential(
             nn.Linear(cond_in, hidden), nn.GELU(),
             nn.Linear(hidden, hidden),
@@ -93,9 +100,14 @@ class H_RoutedSparseRefiner(nn.Module):
 
     def forward(self, X_t: torch.Tensor, X_aux: torch.Tensor, q: torch.Tensor,
                 neighbour_index: torch.Tensor, template_pool: torch.Tensor,
+                H_bar: Optional[torch.Tensor] = None,
+                bp_messages: Optional[torch.Tensor] = None,
+                syndrome: Optional[torch.Tensor] = None,
                 memory_readout: Optional[torch.Tensor] = None,
                 motion_map: Optional[torch.Tensor] = None,
-                topk: int = 32) -> Dict[str, torch.Tensor]:
+                topk: int = 32,
+                neighbour_q: Optional[torch.Tensor] = None,
+                reliability_bias_scale: float = 0.0) -> Dict[str, torch.Tensor]:
         """``X_t``/``X_aux``: (B, N, C); ``q``: (B, N); ``neighbour_index``: (N, K_n);
         ``template_pool``: (B, C); ``memory_readout``: (B, T, D) or None;
         ``motion_map``: (B, 1, 16, 16) or None.
@@ -133,6 +145,29 @@ class H_RoutedSparseRefiner(nn.Module):
                 log_b = (log_b - mu) / sd
             attn_bias = log_b * float(self.motion_bias_scale)
 
+        # Downweight Tanner neighbours that the diagnosis considers unreliable. This
+        # optional relative bias preserves the historical route when its scale is zero.
+        if neighbour_q is not None and float(reliability_bias_scale) != 0.0:
+            nb_q = neighbour_q[bidx[:, :, None], nb].clamp(min=0.0, max=1.0)
+            rel = torch.log1p(-nb_q.clamp(max=1.0 - 1e-6))
+            rel = (rel - rel.mean(dim=-1, keepdim=True)) / rel.std(
+                dim=-1, keepdim=True, unbiased=False).clamp(min=1e-6)
+            rel_bias = rel * float(reliability_bias_scale)
+            attn_bias = rel_bias if attn_bias is None else attn_bias + rel_bias
+
+        # ---- 3. syndrome and motion evidence -------------------------------
+        if bp_messages is not None and H_bar is not None:
+            check_evidence = torch.einsum("bmn,mn->bn", bp_messages, H_bar)
+            check_sel = check_evidence[bidx, suspect_idx]
+        else:
+            check_evidence = q.new_zeros(b, n)
+            check_sel = q.new_zeros(b, k)
+        syndrome_sel = (syndrome.mean(dim=-1, keepdim=True).expand(-1, k)
+                        if syndrome is not None else q.new_zeros(b, k))
+        motion_sel = q.new_zeros(b, k)
+        if motion_map is not None:
+            motion_sel = motion_map.reshape(b, -1)[bidx, suspect_idx]
+
         # ---- 3. condition ------------------------------------------------
         tpl = template_pool.unsqueeze(1).expand(-1, k, -1)            # (B, K, C)
         if memory_readout is not None:
@@ -144,7 +179,9 @@ class H_RoutedSparseRefiner(nn.Module):
         else:
             mem = X_t.new_zeros(b, k, self.memory_dim)
         gate = suspect_score.unsqueeze(-1)                            # (B, K, 1)
-        cond = torch.cat([nb_tokens.flatten(2), aux_tokens, tpl, mem, gate], dim=-1)
+        cond = torch.cat([nb_tokens.flatten(2), aux_tokens, tpl, mem, gate,
+                          check_sel.unsqueeze(-1), syndrome_sel.unsqueeze(-1),
+                          motion_sel.unsqueeze(-1)], dim=-1)
         h = self.down(cond)                                            # (B, K, hidden)
 
         # ---- 4. Tanner-constrained sparse cross-attention -----------------------
@@ -175,6 +212,13 @@ class H_RoutedSparseRefiner(nn.Module):
         ctx = ctx.permute(0, 2, 1, 3).reshape(b, k, self.hidden)
         ctx = self.norm(h + self.dropout(self.out_proj(ctx)))
 
+        # Additional Tanner rounds. The same fixed H-neighbour route is reused,
+        # while check/motion evidence is injected into each residual message update.
+        for _ in range(max(0, self.rounds - 1)):
+            ctx = self.norm(ctx + self.dropout(self.out_proj(
+                self.v_proj(nb_tokens).mean(dim=2))))
+            ctx = ctx + 0.1 * (check_sel + syndrome_sel + motion_sel).unsqueeze(-1)
+
         # ---- 5. gated residual write-back --------------------------------------
         dX = torch.sigmoid(self.residual_gate.reshape(())) * self.up(ctx)   # (B, K, C)
         delta = q[bidx, suspect_idx].unsqueeze(-1) * dX                # (B, K, C)
@@ -186,34 +230,11 @@ class H_RoutedSparseRefiner(nn.Module):
                 "alpha": q}
 
 
-def _cosine_noise_schedule(steps: int, power: float = 1.0) -> torch.Tensor:
-    """SCDT-style cosine schedule: alpha_bar_t = cos(pi/2 * (t/T)^u).
-
-    ``alpha_bar[0]`` is the *most* corrupted level and ``alpha_bar[T-1]`` the cleanest,
-    matching a denoising loop that starts at the corrupted feature and refines.
-    """
-    t = torch.linspace(0.0, 1.0, steps)
-    ab = torch.cos(0.5 * math.pi * (t ** power))
-    return ab.clamp(1e-3, 1.0)
+# Compatibility alias for old checkpoints and tooling. New model construction uses SATRRecovery.
+H_RoutedSparseRefiner = SATRRecovery
 
 
-def _write_weights(steps: int, schedule: str, alpha_bar: torch.Tensor) -> torch.Tensor:
-    """Per-step weight applied to the predicted correction.
-
-    ``alpha_bar`` runs from 1 (noiseless) to ~0 (mostly noise), so ``1 - alpha_bar`` is nonzero
-    only once the step has actually been noised -- which makes step 0 a guaranteed no-op
-    (``1 - 1 = 0``): its prediction and all of its gradients are discarded.  ``ramp`` replaces it
-    with an increasing linear schedule so every step moves the token, the later ones more, which
-    is what a "T-step refinement" claim requires.
-    """
-    if schedule == "linear_noise":
-        w = (1.0 - alpha_bar).clamp(min=0.0)
-    else:  # ramp
-        w = torch.arange(1, steps + 1, dtype=alpha_bar.dtype) / float(max(steps, 1))
-    return w
-
-
-class NoiseModulatedDenoiser(nn.Module):
+class _LegacyRemovedDenoiser(nn.Module):
     """Two-step noising-denoising refinement (architecture figure "Diffusion Correction").
 
     Replaces a 20-100 step DDPM with SCDT's noising-denoising idea at 2 steps, which is
@@ -410,24 +431,3 @@ class NoiseModulatedDenoiser(nn.Module):
             x = x + w * write_gate * pred
 
         return {"X_denoised": x, "step_preds": preds}
-
-
-class MeanVarCompletion(nn.Module):
-    """SCDT's "Mean-Var Completion": predict the clean condition's first two moments.
-
-    The completion head is what ``L_align`` supervises -- matching per-channel mean and
-    variance of the clean feature is a much cheaper target than the full tensor and is
-    exactly what SCDT's ablation shows to matter (``L_align`` alone 76.0/59.9).
-    """
-
-    def __init__(self, dim: int = 768, hidden: int = 256):
-        super().__init__()
-        self.head = nn.Sequential(
-            nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, dim * 2),
-        )
-
-    def forward(self, tokens: torch.Tensor) -> Dict[str, torch.Tensor]:
-        pooled = tokens.mean(dim=1)                                 # (B, C)
-        out = self.head(pooled)
-        mean, logvar = out.chunk(2, dim=-1)
-        return {"pred_mean": mean, "pred_logvar": logvar}

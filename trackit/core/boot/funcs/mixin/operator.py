@@ -29,14 +29,22 @@ def json_query_replace(json_object, path: str, value):
     # Zekai Shao: Skip the value if it is not exist
     paths = path.split('.')
     for sub_path in paths[:-1]:
-        if json_object.get(sub_path, None):
-            json_object = json_object[sub_path] if not sub_path.isdigit() else json_object[int(sub_path)]
-    if paths[-1].isdigit():
-        if json_object.get(int(paths[-1]), None):
-            json_object[int(paths[-1])] = value
-    else:
-        if json_object.get(paths[-1], None):
-            json_object[paths[-1]] = value
+        if sub_path.isdigit():
+            index = int(sub_path)
+            if not isinstance(json_object, list) or not 0 <= index < len(json_object):
+                return
+            json_object = json_object[index]
+        else:
+            if not isinstance(json_object, dict) or sub_path not in json_object:
+                return
+            json_object = json_object[sub_path]
+    last = paths[-1]
+    if last.isdigit():
+        index = int(last)
+        if isinstance(json_object, list) and 0 <= index < len(json_object):
+            json_object[index] = value
+    elif isinstance(json_object, dict) and last in json_object:
+        json_object[last] = value
 
 
 def json_query_retain(json_object, path: str, value):

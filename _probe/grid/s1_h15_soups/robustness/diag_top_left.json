@@ -1,0 +1,75 @@
+{
+  "probe": "diagnosis_direction_v1",
+  "checkpoint": "_probe/grid/s1_h15_soups/checkpoints/all4.bin",
+  "damage_region": [
+    28,
+    84,
+    28,
+    84
+  ],
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "tokens": 256,
+  "topk": 32,
+  "damage_fraction": 0.06523437798023224,
+  "error_mean": 0.0017482474213466048,
+  "error_std": 0.00563795818015933,
+  "q_mean": 0.7812225818634033,
+  "q_std": 0.006355133838951588,
+  "q_logits_std": 0.03720688074827194,
+  "s_std": 0.20419448614120483,
+  "candidates": {
+    "q": {
+      "auroc": 0.5014725923538208,
+      "overlap": 0.12049486488103867,
+      "topk_gap": 0.009732544422149658,
+      "score_std": 0.006355133838951588
+    },
+    "neg_q": {
+      "auroc": 0.4985273778438568,
+      "overlap": 0.16344793140888214,
+      "topk_gap": 0.009638309478759766,
+      "score_std": 0.006355133838951588
+    },
+    "q_logits": {
+      "auroc": 0.5014725923538208,
+      "overlap": 0.12049486488103867,
+      "topk_gap": 0.05754709243774414,
+      "score_std": 0.03720688074827194
+    },
+    "neg_q_logits": {
+      "auroc": 0.4985273778438568,
+      "overlap": 0.16344793140888214,
+      "topk_gap": 0.055852532386779785,
+      "score_std": 0.03720688074827194
+    },
+    "s_to_token": {
+      "auroc": 0.4984973669052124,
+      "overlap": 0.16344793140888214,
+      "topk_gap": 0.05584649741649628,
+      "score_std": 0.0372038334608078
+    },
+    "neg_s_to_token": {
+      "auroc": 0.5015026330947876,
+      "overlap": 0.12049486488103867,
+      "topk_gap": 0.05754364654421806,
+      "score_std": 0.0372038334608078
+    }
+  },
+  "check_corr": {
+    "mean_offdiag": -0.013439623638987541,
+    "median_offdiag": -0.03554925695061684,
+    "abs_mean_offdiag": 0.38498246669769287,
+    "max_abs_offdiag": 0.9587165117263794
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "probe": "denoiser_write_support_v1",
+  "mode": "oracle_unit",
+  "topk": 64,
+  "checkpoint": "_probe/grid/s1_h23_sparse_curve/out/freeze_rec15e4/GOLA-codetrack_s1-mixin-_grid_freeze_rec15e4-2026.10.04-19.54.27-311109/checkpoint/epoch_01/model.bin",
+  "seed": 0,
+  "batch": 10,
+  "checkpoint_tensors": 1392,
+  "unexpected_keys": [],
+  "damage_fraction": 0.150390625,
+  "support_fraction": 0.150390625,
+  "support_damage_recall": 1.0,
+  "q_mean": 0.19498716294765472,
+  "q_std": 0.339506059885025,
+  "gate_mean": 0.150390625,
+  "d_input": 0.07398319244384766,
+  "d_refiner": 0.07137972116470337,
+  "d_final": 0.07308181375265121,
+  "gain_refiner": 0.002603468019515276,
+  "gain_final": 0.0009013719391077757,
+  "denoiser_delta_l2_damage": 1.275631308555603,
+  "denoiser_delta_l2_clean": 0.0
+}

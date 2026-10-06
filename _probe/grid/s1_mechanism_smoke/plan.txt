@@ -1,0 +1,15 @@
+# CodeTrack research-ratchet H1 smoke screen, 50 optimizer updates per arm.
+#
+# H1: the dense denoiser write-back, large residual-head initialization, or an overly
+# broad TopK budget causes the negative initial recovery gain.
+# Falsifiable prediction: at least one single-variable intervention improves the final
+# 10-update gain window over the current best S1 recipe without NaN/Inf or q collapse.
+# If all arms remain equally negative, H1 is rejected and the next round targets the
+# recovery objective/normalization rather than these capacity controls.
+#
+# Shared: effective batch 16 x accumulation 8 = 128; 50 updates = 6400 samples.
+
+gpu1_baseline|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu2_no_denoiser|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,diffusion_enabled=false,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu3_small_up|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.005,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu4_topk8|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,topk_tokens=8,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400

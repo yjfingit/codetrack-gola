@@ -359,13 +359,119 @@ class SyndromeDiagnosis(nn.Module):
         s_raw = (s_raw - self.syndrome_logit_offset) * self.syndrome_logit_gain
         s = torch.sigmoid(s_raw)                                # (B, M)
 
-        q_logits = torch.einsum("mn,bm->bn", H_bar, s) + self.vote_bias
-        q = torch.sigmoid(q_logits)                             # (B, N)
+        # The transmitted check evidence is an error score.  With the original positive
+        # incidence map, damaged tokens were assigned *lower* q (measured AUROC 0.258 and
+        # TopK overlap 0.016 on the fixed LasHeR batch).  Negating the projection makes q's
+        # semantics match every downstream consumer: larger q means more likely damaged.
+        # Reverse only the transmitted evidence. ``vote_bias`` is already logit(prior), so
+        # negating it as well changes a 0.2 error prior into a 0.8 prior and makes every token
+        # look damaged even when the syndrome carries no evidence.
+        q_logits = -torch.einsum("mn,bm->bn", H_bar, s) + self.vote_bias
+        q = torch.sigmoid(q_logits)                             # (B, N), error probability
 
         out = {"q": q, "q_logits": q_logits, "s": s, "s_logits": s_raw,
                "C_obs": C_obs, "C_ref": C_ref, "U": U, "R": R}
         if _pending_calibration:
             out["syndrome_pending_calibration"] = s_raw.detach()
+        if return_checks:
+            out["H_bar"] = H_bar
+        return out
+
+
+class NeuralBPSyndromeDiagnosis(nn.Module):
+    """Unfolded neural belief propagation over the fixed Tanner graph.
+
+    The feature encoder emits a signed symbol LLR for each search token.  Each BP
+    iteration then exchanges extrinsic messages along the sparse parity-check support:
+    variable-to-check messages add all other check messages, and check-to-variable
+    messages use a differentiable sum-product update.  The graph therefore performs
+    localization through redundancy instead of a dense MLP backprojection.
+
+    The output convention is explicit throughout: positive logits mean ``damaged``.
+    The final q is initialized to the configured corruption prior, so a fresh CodeTrack
+    checkpoint remains an identity wrapper around the pretrained tracker.
+    """
+
+    def __init__(self, dim: int = 768, mid_dim: int = 128, num_checks: int = 64,
+                 num_variables: int = 256, syndrome_hidden: int = 128,
+                 detection_prior: float = 0.2, bp_iterations: int = 3,
+                 bp_damping: float = 0.5, explicit_syndrome_weight: float = 0.0):
+        super().__init__()
+        self.num_checks = int(num_checks)
+        self.num_variables = int(num_variables)
+        self.bp_iterations = int(bp_iterations)
+        self.bp_damping = float(bp_damping)
+        self.explicit_syndrome_weight = float(explicit_syndrome_weight)
+        self.W_x = nn.Linear(dim, mid_dim)
+        self.W_r = nn.Linear(dim, mid_dim)
+        self.template_ctx = nn.Linear(dim, mid_dim)
+        self.symbol = nn.Sequential(
+            nn.Linear(mid_dim * 2, syndrome_hidden), nn.GELU(),
+            nn.Linear(syndrome_hidden, 1))
+        # A zero final layer gives a deterministic prior-only decoder at step 0 while
+        # retaining gradients through the complete encoder and BP graph.
+        nn.init.normal_(self.symbol[-1].weight, mean=0.0, std=1e-3)
+        nn.init.zeros_(self.symbol[-1].bias)
+        self.edge_gain = nn.Parameter(torch.zeros(num_checks, num_variables))
+        self.check_gain = nn.Parameter(torch.ones(num_checks))
+        self.variable_gain = nn.Parameter(torch.ones(num_variables))
+        self.vote_bias = nn.Parameter(torch.full((num_variables,),
+                                  float(torch.logit(torch.tensor(
+                                      min(max(float(detection_prior), 1e-3), 1 - 1e-3))))))
+
+    def forward(self, X_t: torch.Tensor, X_aux: torch.Tensor, H_bar: torch.Tensor,
+                template_context: Optional[torch.Tensor] = None,
+                return_checks: bool = False) -> Dict[str, torch.Tensor]:
+        b, n, _ = X_t.shape
+        U = self.W_x(X_t)
+        R = self.W_r(X_aux)
+        if template_context is not None:
+            R = R + self.template_ctx(template_context).unsqueeze(1)
+        diff = U - R
+        symbol_logits = self.symbol(torch.cat([diff, diff.abs()], dim=-1)).squeeze(-1)
+        support = (H_bar > 0).to(symbol_logits.dtype)
+        # Keep learned edge scales bounded and zero at initialization.  The fixed H
+        # still defines every message route; scales only tune useful checks.
+        edge = H_bar * (1.0 + 0.25 * torch.tanh(self.edge_gain)) * support
+        edge = edge / edge.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        # A real visual parity check: H aggregates the cross-modal residual energy.
+        # This is a syndrome of the observation pair, rather than a free MLP score.
+        check_residual = torch.sqrt(
+            torch.einsum("mn,bn->bm", edge, diff.square().mean(dim=-1)).clamp_min(1e-8))
+        check_z = (check_residual - check_residual.mean(dim=-1, keepdim=True)) / \
+            check_residual.std(dim=-1, keepdim=True, unbiased=False).clamp_min(1e-6)
+        v2c = symbol_logits.unsqueeze(1).expand(-1, self.num_checks, -1)
+        c2v = torch.zeros_like(v2c)
+        damping = min(max(self.bp_damping, 0.0), 1.0)
+        check_logits = torch.zeros(b, self.num_checks, device=X_t.device, dtype=X_t.dtype)
+        for _ in range(self.bp_iterations):
+            total = (edge.unsqueeze(0) * c2v).sum(dim=-1, keepdim=True)
+            v2c_new = symbol_logits.unsqueeze(1) + total - c2v
+            # Sum-product check update. tanh/atanh is stable after clamping and is
+            # fully differentiable, unlike a hard parity decision.
+            tanh_msg = torch.tanh(0.5 * v2c_new).clamp(-0.999, 0.999)
+            signed = torch.sign(tanh_msg + 1e-8)
+            log_abs = torch.log(tanh_msg.abs().clamp_min(1e-6))
+            sum_log = (support.unsqueeze(0) * log_abs).sum(dim=-1, keepdim=True)
+            prod_excl = torch.exp(sum_log - log_abs).clamp(1e-6, 0.999)
+            # For +/-1 signs, product(all) * sign(i) is the product excluding i.
+            # The sign is a routing cue; the magnitude remains differentiable.
+            sign_excl = signed.prod(dim=-1, keepdim=True) * signed
+            c2v_new = 2.0 * torch.atanh((sign_excl * prod_excl).clamp(-0.999, 0.999))
+            c2v_new = c2v_new * self.check_gain.view(1, -1, 1) * edge.unsqueeze(0)
+            c2v = damping * c2v + (1.0 - damping) * c2v_new
+            check_logits = (edge.unsqueeze(0) * v2c_new).sum(dim=-1)
+            v2c = v2c_new
+        var_logits = symbol_logits * self.variable_gain.view(1, -1) + c2v.sum(dim=1)
+        parity_vote = torch.einsum("mn,bm->bn", edge, check_z)
+        q_logits = var_logits + self.vote_bias + self.explicit_syndrome_weight * parity_vote
+        q = torch.sigmoid(q_logits)
+        s_logits = check_logits + self.explicit_syndrome_weight * check_z
+        s = torch.sigmoid(s_logits)
+        out = {"q": q, "q_logits": q_logits, "s": s, "s_logits": s_logits,
+               "C_obs": v2c, "C_ref": torch.zeros_like(v2c), "U": U, "R": R,
+               "symbol_logits": symbol_logits, "bp_messages": c2v,
+               "check_residual": check_residual, "syndrome_residual": check_z}
         if return_checks:
             out["H_bar"] = H_bar
         return out

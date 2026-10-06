@@ -1,0 +1,7 @@
+# H5 smoke: repeat the residual output-scale screen with the production calibration chain fixed.
+# Shared: 50 updates, effective batch 128, synchronized one-shot syndrome calibration.
+
+gpu1_up0025|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.0025,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu2_up005|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.005,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu3_up010|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.01,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu4_up020|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.02,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400

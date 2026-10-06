@@ -1,0 +1,34 @@
+================================================================
+CodeTrack Stage 1 Report -- H10 rec1e3_focus
+================================================================
+  [PASS] no NaN/Inf in loss   399 steps
+  [PASS] grad_norm finite at accumulation boundaries   max=0.664
+  [FAIL] cosine horizon traversed   0.000e+00 -> 3.600e-05
+  [WARN] parameter deltas available   no before/after snapshot supplied
+  [PASS] diagnosis AUROC(q, corruption_mask) above chance   AUROC=0.5436
+  [WARN] diagnosis AUROC sanity floor (0.6)   AUROC=0.5436 -- sanity check only, not a paper claim
+  [PASS] q has not collapsed to a constant   q_std=2.400e-03
+  [PASS] q separates damaged from untouched tokens   pos=0.7845 neg=0.7841
+  [PASS] recovery improves on its input (d_final < d_input)   d_input=0.0802 d_final=0.074 gain_total=+0.0064 (need > 0.005)
+  [WARN] residual gate probed   gate value not supplied
+
+Metrics:
+  AUPRC(q, mask)               = 0.0331
+  AUROC(q, mask)               = 0.5436
+  Error/d_after                = 0.074
+  Error/d_before               = 0.0802
+  Error/d_input                = 0.0802
+  Error/gain_refiner           = 0.0001
+  Error/gain_total             = 0.0064
+  lr_first                     = 0.0
+  lr_last                      = 3.6e-05
+  lr_max_seen                  = 0.001
+  lr_min_seen                  = 0.0
+  micro_steps_logged           = 399.0
+  q_neg_mean                   = 0.7841
+  q_pos_mean                   = 0.7845
+  q_std                        = 0.0024
+  updates_logged               = 24.0
+
+FINAL: NO-GO
+================================================================

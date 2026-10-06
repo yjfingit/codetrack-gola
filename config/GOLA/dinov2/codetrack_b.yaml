@@ -17,6 +17,11 @@ h_locality_window: 5     # each check watches a local 2-D window
 h_free_edge_frac: 0.25   # share of edges drawn globally (0 = pure local, 1 = no locality)
 h_seed: 1234
 syndrome_hidden: 128
+decoder_type: neural_bp
+bp_iterations: 3
+bp_damping: 0.5
+abstain_enabled: false
+abstain_threshold: 0.5
 syndrome_cos: true
 detection_prior: 0.2
 syndrome_logit_gain: 1.0
@@ -37,18 +42,12 @@ num_neighbours: 8        # K_n
 refiner_hidden: 256      # 768 -> 256 -> 768
 refiner_heads: 4
 # Small nonzero output weights keep corrections bounded; the gate stays learnable.
-residual_gate_init: 0.0
-up_init_std: 0.02
+residual_gate_init: -3.0
+up_init_std: 0.002
 motion_bias_normalise: true
 # How strongly the Kalman prior steers H-routed evidence selection (0 = ignored).
 motion_bias_scale: 0.5
-diffusion_enabled: true
-diffusion_steps: 2       # 2-step refinement, never a 20-100 step DDPM
-diffusion_hidden: 256
-diffusion_heads: 4
-noise_weak_std: 0.05
-noise_strong_std: 0.20
-noise_strong_prob: 0.5
+satr_rounds: 3
 
 # block 6 -- online template protection
 template_protection: true

@@ -39,6 +39,15 @@ class ParameterUpdater_WithAMPSupport:
         norm = None
         if update_grad:
             self._grad_scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
+            # Keep the first offending tensors visible in logs. A finite scalar loss can still
+            # produce an invalid gradient through a normalization or matrix inverse; without
+            # this check the optimizer silently receives NaNs and later checkpoints become
+            # unusable.
+            bad = tuple(i for i, p in enumerate(_get_params_from_optimizer_grouped_params(optimizer))
+                        if p.grad is not None and not bool(torch.isfinite(p.grad).all()))
+            if bad:
+                print(f"non-finite gradients before clipping: indices={bad[:12]} count={len(bad)}",
+                      flush=True)
             if self._max_grad_norm is not None:
                 norm = torch.nn.utils.clip_grad_norm_(_get_params_from_optimizer_grouped_params(optimizer), self._max_grad_norm).item()
             elif self._always_get_grad_norm:

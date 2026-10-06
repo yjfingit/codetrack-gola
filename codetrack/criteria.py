@@ -259,10 +259,12 @@ class CodeTrackCriteria(nn.Module):
 
     def __init__(self, w_track_corr: float = 1.0, w_track_clean: float = 0.25,
                  lambda_diag: float = 0.5, lambda_rec: float = 0.2,
+                 lambda_diag_rank: float = 0.0, diag_rank_margin: float = 0.2,
                  lambda_gain: float = 0.2,
                  lambda_align: float = 0.2, lambda_pres: float = 0.01,
                  lambda_mem: float = 0.1, lambda_gate: float = 0.1,
                  lambda_motion: float = 0.2, lambda_trc: float = 0.1,
+                 lambda_post_syndrome: float = 0.0, post_syndrome_margin: float = 0.9,
                  diagnosis_alpha: float = 0.5,
                  gain_margin: float = 0.8,
                  cls_name: str = "cls", reg_name: str = "box"):
@@ -270,6 +272,8 @@ class CodeTrackCriteria(nn.Module):
         self.w_track_corr = float(w_track_corr)
         self.w_track_clean = float(w_track_clean)
         self.lambda_diag = float(lambda_diag)
+        self.lambda_diag_rank = float(lambda_diag_rank)
+        self.diag_rank_margin = float(diag_rank_margin)
         self.lambda_rec = float(lambda_rec)
         self.lambda_gain = float(lambda_gain)
         # ``d_after`` must beat ``gain_margin * d_before``; 0.8 means "reduce the distance to the
@@ -280,6 +284,8 @@ class CodeTrackCriteria(nn.Module):
         self.lambda_mem = float(lambda_mem)
         self.lambda_gate = float(lambda_gate)
         self.lambda_motion = float(lambda_motion)
+        self.lambda_post_syndrome = float(lambda_post_syndrome)
+        self.post_syndrome_margin = float(post_syndrome_margin)
         self.lambda_trc = float(lambda_trc)
         self.alpha = float(diagnosis_alpha)
         self.cls_name = cls_name
@@ -331,14 +337,25 @@ class CodeTrackCriteria(nn.Module):
             # sigmoid output raises "unsafe to autocast" mid-run (observed on the first real
             # training step, which is exactly the kind of failure a preflight exists to catch).
             q_logits = extras.get("q_logits")
+            # Synthetic corruption supplies an exact token-level transmission error code.
+            # Use it as the primary detector target; the continuous feature discrepancy is
+            # retained as a soft auxiliary target below.  Mixing them as one BCE target made
+            # q learn severity while the router needed support recovery, and caused q to
+            # collapse below the configured prior during the first S1 run.
+            cor_mask_diag = extras.get("corruption_mask")
+            diag_target = (cor_mask_diag.to(err.dtype)
+                           if cor_mask_diag is not None and bool(cor_mask_diag.any())
+                           else err)
             if q_logits is not None:
-                l_diag = F.binary_cross_entropy_with_logits(q_logits.float(), err.float())
+                l_diag = F.binary_cross_entropy_with_logits(q_logits.float(), diag_target.float())
             else:
-                l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), err)
+                l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), diag_target)
             s = extras.get("s")
             s_target = extras.get("syndrome_target")
             if s is not None and s_target is not None:
-                l_diag = l_diag + 0.5 * F.smooth_l1_loss(s.float(), s_target.float())
+                # Keep the measured feature syndrome as a gentle consistency term rather
+                # than allowing it to reverse the signed damage convention.
+                l_diag = l_diag + 0.25 * F.smooth_l1_loss(s.float(), s_target.float())
             total = total + self.lambda_diag * l_diag
             metrics["Loss/diag"] = float(l_diag.detach())
             # Reporting only: is the head's ranking of "which token is damaged" better than
@@ -347,8 +364,16 @@ class CodeTrackCriteria(nn.Module):
             #
             # PRIMARY metric: rank q against the injector's exact token label.  No threshold is
             # involved, so it is a direct answer to "can the diagnosis find the damaged tokens".
-            cor_mask_diag = extras.get("corruption_mask")
             if cor_mask_diag is not None:
+                pos_rank = cor_mask_diag.to(torch.bool)
+                neg_rank = ~pos_rank
+                if q_logits is not None and bool(pos_rank.any()) and bool(neg_rank.any()):
+                    logits_rank = q_logits.float()
+                    logit_gap = logits_rank[pos_rank].mean() - logits_rank[neg_rank].mean()
+                    l_diag_rank = F.relu(self.diag_rank_margin - logit_gap)
+                    total = total + self.lambda_diag_rank * l_diag_rank
+                    metrics["Loss/diag_rank"] = float(l_diag_rank.detach())
+                    metrics["Error/q_logit_gap"] = float(logit_gap.detach())
                 auroc_mask = _auroc_against_mask(q.detach(), cor_mask_diag)
                 if auroc_mask is not None:
                     metrics["Error/q_auroc_mask"] = auroc_mask
@@ -375,6 +400,21 @@ class CodeTrackCriteria(nn.Module):
             metrics["Error/q_mean"] = float(q.detach().mean())
 
         # ---- recovery -------------------------------------------------------
+        syn_before = extras.get("syndrome_energy_before")
+        syn_after = extras.get("syndrome_energy_after")
+        if syn_before is not None and syn_after is not None:
+            # On corrupted frames the decoder should reduce parity residual. On clean frames the
+            # same term protects the identity path by making any increase costly. The margin is
+            # multiplicative so it remains meaningful across sequences and feature scales.
+            syn_gap = F.relu(syn_after - self.post_syndrome_margin * syn_before)
+            l_post = syn_gap.mean()
+            if self.lambda_post_syndrome > 0:
+                total = total + self.lambda_post_syndrome * l_post
+            metrics["Loss/post_syndrome"] = float(l_post.detach())
+            metrics["Error/syndrome_before"] = float(syn_before.detach().mean())
+            metrics["Error/syndrome_after"] = float(syn_after.detach().mean())
+            metrics["Error/syndrome_gain"] = float((syn_before - syn_after).detach().mean())
+
         rec = extras.get("recovered")
         clean_tok = extras.get("clean_tokens")
         if rec is not None and clean_tok is not None:
@@ -417,7 +457,7 @@ class CodeTrackCriteria(nn.Module):
         # all-clean batch (the majority of every batch) there is no corruption mask and the term
         # simply does not exist -- mixing ~86% untouched samples into the average would hide the
         # very signal it exists to expose.
-        x_rec = extras.get("recovered_pre_denoise")
+        x_rec = extras.get("recovered_satr")
         x_in = extras.get("input_tokens")
         cor_mask = extras.get("corruption_mask")
         if x_rec is not None and x_in is not None and clean_tok is not None \
@@ -437,7 +477,7 @@ class CodeTrackCriteria(nn.Module):
             # ``L_gain`` would carry no gradient into the refiner/denoiser at all and the term
             # would be decorative.
             d_before_map = self._relative_error(x_rec, clean_tok)
-            d_after_map = self._relative_error(rec, clean_tok)
+            d_after_map = d_before_map
             d_input = d_input_map[cor].mean()
             d_before = d_before_map[cor].mean()
             d_after = d_after_map[cor].mean()
@@ -449,22 +489,16 @@ class CodeTrackCriteria(nn.Module):
             # which has no anchor to the input, made things worse.  Both ``d_input`` and
             # ``d_before`` are detached -- otherwise the model could lower this loss by making its
             # own input worse instead of making the output better.
-            l_gain_refiner = F.relu(d_before - self.gain_margin * d_input)
-            l_gain_final = F.relu(d_after - self.gain_margin * d_input)
-            l_gain = l_gain_refiner + l_gain_final
+            l_gain = F.relu(d_after - self.gain_margin * d_input)
             if self.lambda_gain > 0:
                 total = total + self.lambda_gain * l_gain
             metrics["Loss/gain"] = float(l_gain.detach())
-            metrics["Loss/gain_refiner"] = float(l_gain_refiner.detach())
-            metrics["Loss/gain_final"] = float(l_gain_final.detach())
             # reporting only -- these are the preflight acceptance numbers
             metrics["Error/d_input"] = float(d_input.detach())
             metrics["Error/d_before"] = float(d_before.detach())
             metrics["Error/d_after"] = float(d_after.detach())
             # The paper-level criterion, and the two sub-stages that compose it.
             metrics["Error/gain_total"] = float((d_input - d_after).detach())
-            metrics["Error/gain_refiner"] = float((d_input - d_before).detach())
-            metrics["Error/gain_denoiser"] = float((d_before - d_after).detach())
             metrics["Error/corrupted_fraction"] = float(cor.to(torch.float32).mean())
             # The task-relevant form of the same question: does the branch shrink the error at
             # all?  Reported for the tokens that were damaged AND flagged as suspect.
@@ -480,16 +514,6 @@ class CodeTrackCriteria(nn.Module):
                     metrics["Error/d_after_suspect"] = float(d_after_map[sel].mean().detach())
                     metrics["Error/gain_suspect"] = float(
                         (d_input_map[sel] - d_after_map[sel]).mean().detach())
-
-        # ---- alignment (mean / var completion) ------------------------------
-        mv = extras.get("meanvar")
-        if mv is not None and clean_tok is not None:
-            tgt_mean = clean_tok.mean(dim=1)
-            tgt_logvar = clean_tok.var(dim=1, unbiased=False).clamp(min=1e-6).log()
-            l_align = F.mse_loss(mv["pred_mean"], tgt_mean.detach()) \
-                + F.mse_loss(mv["pred_logvar"], tgt_logvar.detach())
-            total = total + self.lambda_align * l_align
-            metrics["Loss/align"] = float(l_align.detach())
 
         # ---- preservation on reliable tokens --------------------------------
         pres = extras.get("preserve")
@@ -512,6 +536,9 @@ class CodeTrackCriteria(nn.Module):
             ref = outputs["score_map"]
             was_cor = was_cor.to(device=ref.device)
             trust = (~was_cor.to(torch.bool)).to(torch.float32)      # 1 = trustworthy frame
+            gate_target = extras.get("gate_target")
+            if gate_target is not None:
+                trust = gate_target.reshape(-1).to(device=ref.device, dtype=torch.float32)
             mem_rel = extras.get("frame_reliability")
             if mem_rel is not None:
                 mem_rel = mem_rel.reshape(-1).to(device=ref.device)
@@ -577,7 +604,14 @@ class CodeTrackCriteria(nn.Module):
             metrics["Loss/motion"] = float(l_motion.detach())
 
         metrics["Loss/track_corr"] = float(track_corr.detach())
-        return CriterionOutput(total, metrics)
+        # This is control data for the runner, not a scalar metric.  The first training
+        # forward exports the raw syndrome so the runner can aggregate one calibration over
+        # all DDP ranks before backward.  Keeping it in CriterionOutput is necessary because
+        # the model wrapper otherwise returns only the criterion result to DefaultTrainer.
+        pending = extras.get("syndrome_pending_calibration")
+        control = ({"syndrome_pending_calibration": pending}
+                   if pending is not None else None)
+        return CriterionOutput(total, metrics, control)
 
     # The upstream builder inspects the criterion for parameters to decide whether it
     # lives inside the computational graph.  CodeTrack's auxiliary terms are pure

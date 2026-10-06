@@ -82,6 +82,7 @@ def real_batch(dataset: Path, names):
 
 def verify(dataset, view, config, output):
     import torch
+    from codetrack.ddp_calibration import consume_pending_calibration
     from safetensors.torch import load_file
     from trackit.models import ModelImplSuggestions
     from trackit.models.methods.GOLA.builder import build_GOLA_model
@@ -96,7 +97,9 @@ def verify(dataset, view, config, output):
     diagnosis = model.codetrack.diagnosis
     recorded = []
     hook = diagnosis.register_forward_hook(lambda module, inputs, out: recorded.append(
-        {k: out[k].detach().clone() for k in ('q', 's', 's_logits')}))
+        {k: out[k].detach().clone() for k in ('q', 's', 's_logits')}
+        | ({'syndrome_pending_calibration': out['syndrome_pending_calibration'].detach().clone()}
+           if out.get('syndrome_pending_calibration') is not None else {})))
 
     def run(train):
         model.train(train)
@@ -109,13 +112,27 @@ def verify(dataset, view, config, output):
     assert not diagnosis._syndrome_gain_calibrated, 'evaluation must not calibrate'
     raw = before['s_logits']
     uncentred = (raw / raw.std(unbiased=False)).sigmoid()
+    # Production deliberately applies calibration in the runner, outside forward(), so
+    # DDP ranks can aggregate one common set of statistics without interleaving a custom
+    # collective with DDP reducer collectives.  Mirror that exact two-forward sequence here.
+    run(True)
+    pending = recorded[-1].get('syndrome_pending_calibration')
+    assert pending is not None, 'first training forward must publish calibration statistics'
+    applied = consume_pending_calibration(diagnosis, pending)
+    assert applied is not None, 'runner-style calibration was not applied'
+    calibrated_pending = ((pending - diagnosis.syndrome_logit_offset.detach())
+                          * diagnosis.syndrome_logit_gain.detach())
+    assert abs(float(calibrated_pending.std(unbiased=False)) - 1.0) < 1e-4
     run(True)
     after = recorded[-1]
     gain, offset = diagnosis.syndrome_logit_gain.detach().clone(), diagnosis.syndrome_logit_offset.detach().clone()
     run(True)
     assert torch.equal(diagnosis.syndrome_logit_gain, gain), 'second batch must not recalibrate'
     assert torch.equal(diagnosis.syndrome_logit_offset, offset)
-    assert abs(float(after['s_logits'].std(unbiased=False)) - 1.0) < 1e-4
+    # A later training forward has fresh DropPath randomness, so its raw distribution is
+    # expected to move; the reusable invariant is that it stays finite and non-degenerate.
+    assert torch.isfinite(after['s_logits']).all()
+    assert float(after['s_logits'].std(unbiased=False)) > 0.1
     assert float(after['s'].std()) > 0.05 and float(after['q'].std()) > 1e-3
     assert torch.isfinite(after['q']).all()
 
@@ -145,6 +162,8 @@ def verify(dataset, view, config, output):
 
     report = dict(config=str(config), sequences=names, gain=float(gain), offset=float(offset),
                   raw_logit_mean=float(raw.mean()), raw_logit_std=float(raw.std(unbiased=False)),
+                  calibrated_pending_std=float(calibrated_pending.std(unbiased=False)),
+                  next_batch_logit_std=float(after['s_logits'].std(unbiased=False)),
                   gain_only_s_std=float(uncentred.std()),
                   before={k: float(before[k].std()) for k in ('q', 's')},
                   after={k: float(after[k].std()) for k in ('q', 's')},

@@ -134,10 +134,13 @@ def _common_checks(rep: StageReport, log: StageLog, deltas: Optional[Dict[str, f
     lr = log.learning_rates()
     if lr:
         rep.metrics.update(lr)
-        span = lr["lr_first"] - 1e-6
-        drop = lr["lr_first"] - lr["lr_last"]
+        # Stages with update-based warmup legitimately start at zero.  The cosine traversal
+        # starts at the observed peak after warmup, not at the first logged micro-step.
+        peak = lr.get("lr_max_seen", lr["lr_first"])
+        span = peak - 1e-6
+        drop = peak - lr["lr_last"]
         rep.add("cosine horizon traversed", "PASS" if drop > LR_TRAVERSED_MIN * span else "FAIL",
-                f"{lr['lr_first']:.3e} -> {lr['lr_last']:.3e}")
+                f"peak {peak:.3e} -> {lr['lr_last']:.3e}")
 
     if deltas is None:
         rep.add("parameter deltas available", "WARN", "no before/after snapshot supplied")
@@ -240,7 +243,7 @@ def validate_stage(stage: int, log_path: str,
 
     if stage == 1:
         _common_checks(rep, log, deltas,
-                       must_move={"H / diagnosis / refiner / denoiser": "codetrack."},
+                       must_move={"H / diagnosis / SATR": "codetrack."},
                        must_freeze={"DINOv2 backbone": "blocks.",
                                     "GOLA head": "head.",
                                     "LoRA adapters": "lora",
@@ -298,7 +301,7 @@ def validate_stage(stage: int, log_path: str,
         _common_checks(rep, log, deltas,
                        must_move={"motion prior": "codetrack.motion.",
                                   "temporal memory": "codetrack.memory.",
-                                  "spatial CodeTrack": "codetrack.refiner."},
+                                  "spatial CodeTrack": "codetrack.satr."},
                        must_freeze={"DINOv2 backbone": "blocks."})
         # Motion must be supervised and must be a function of history, not of the current GT.
         ml_first, ml_last = log.first_last("Loss/motion", ema=True)

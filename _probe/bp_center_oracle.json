@@ -1,0 +1,39 @@
+{
+  "probe": "oracle_gate_v1",
+  "checkpoint": "_probe/bp_center.safetensors",
+  "topk": 32,
+  "diffusion_enabled": false,
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "damage_fraction": 0.150390625,
+  "results": {
+    "learned": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.03152503818273544,
+      "gain_total": -0.0038586147129535675,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.08593783527612686,
+      "gain_damage": -0.011954646557569504
+    },
+    "oracle_soft": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.030178794637322426,
+      "gain_total": -0.0025123730301856995,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.09031420201063156,
+      "gain_damage": -0.016331013292074203
+    },
+    "oracle_hard": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.0309298038482666,
+      "gain_total": -0.0032633827067911625,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.09568257629871368,
+      "gain_damage": -0.02169937454164028
+    }
+  }
+}
