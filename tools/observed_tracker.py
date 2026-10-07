@@ -66,7 +66,13 @@ class ObservedGOLATracker:
         if decoder_checkpoint is not None:
             from codetrack.word_decoder import NativeWordDecoder
             self.decoder = NativeWordDecoder().cuda().eval()
-            self.decoder.load_state_dict(load_file(str(decoder_checkpoint)), strict=True)
+            # E0026/E0027 checkpoints predate the explicit abstention and gain heads.  Keep
+            # them loadable for diagnostics, but their missing safety heads remain at the
+            # conservative initialization and therefore cannot silently perform writes.
+            state = load_file(str(decoder_checkpoint))
+            missing, unexpected = self.decoder.load_state_dict(state, strict=False)
+            if unexpected:
+                raise RuntimeError(f'unexpected decoder checkpoint keys: {unexpected}')
             self.decoder.ablation = decoder_ablation
         self.normalize = get_dataset_norm_stats_transform('mm', inplace=True)
         self.post = PostProcessing_BoxWithScoreMap(torch.device('cuda'), (16, 16), (224, 224), .45)
@@ -131,6 +137,12 @@ class ObservedGOLATracker:
         if self.fused is None or self.fused.shape != (1, 768, 768):
             raise RuntimeError('normal-backbone fused-token capture failed')
         receiver = self.fused.detach().clone()
+        baseline_decoded = self.post(out)
+        baseline_pred = baseline_decoded['box'][0].cpu().double().numpy()
+        baseline_pred = apply_siamfc_cropping_to_boxes(
+            baseline_pred, reverse_siamfc_cropping_params(actual))
+        bbox_clip_to_image_boundary_(baseline_pred, np.array([image.shape[-1], image.shape[-2]]))
+        baseline_confidence = float(baseline_decoded['confidence'][0])
         correction_info = None
         if self.decoder is not None:
             out, correction_info = self._decode_native_words(image, raw_crop, actual, d, dm_before,
@@ -146,21 +158,28 @@ class ObservedGOLATracker:
                         'z': self.z.detach().cpu().clone(), 'd': d.detach().cpu().clone(),
                         'z_mask': self.zm.detach().cpu().clone(), 'd_mask': dm_before.cpu(),
                         'motion_posterior_x': motion_x.cpu(), 'motion_posterior_P': motion_p.cpu()}
-        self.provider.update(confidence, pred, np.array([image.shape[-1], image.shape[-2]]))
         # A repaired frame is not evidence that its raw sensor/template is healthy.
         # Preserve online-template state until a directly reliable observation arrives.
         repaired = correction_info is not None and correction_info['written_tokens'] > 0
+        # A repaired output is provisional.  Until a separate confirmation policy exists, keep
+        # the baseline trajectory in the crop provider and Kalman state so one false write cannot
+        # poison every subsequent frame.  The repaired box is still returned for current-frame
+        # evaluation.
+        state_pred = baseline_pred if repaired else pred
+        state_confidence = baseline_confidence if repaired else confidence
+        self.provider.update(state_confidence, state_pred,
+                             np.array([image.shape[-1], image.shape[-2]]))
         if not repaired:
-            self.updater.update(0, confidence, image, pred)
-        if confidence > .84 and not repaired:
-            self.dm = self._mask(pred, get_siamfc_cropping_params(pred, 2., np.array((112, 112))))
+            self.updater.update(0, state_confidence, image, state_pred)
+        if state_confidence > .84 and not repaired:
+            self.dm = self._mask(state_pred, get_siamfc_cropping_params(state_pred, 2., np.array((112, 112))))
             if self.decoder is not None:
                 self.history.append({'image': image.detach().cpu().byte(), 'bbox': pred.copy(),
                                      'confidence': confidence, 'frame': self.frame_index + 1})
         self.frame_index += 1
-        bb = image.new_tensor(pred)[None]
+        bb = image.new_tensor(state_pred)[None]
         self.motion.observe(torch.cat([(bb[:, :2] + bb[:, 2:]) * .5, bb[:, 2:] - bb[:, :2]], -1),
-                            size, confidence=image.new_tensor([confidence]), predict=False)
+                            size, confidence=image.new_tensor([state_confidence]), predict=False)
         return {'box': pred, 'confidence': confidence, 'crop_params': actual,
                 'motion_prediction_xywh': motion['motion_box'][0].cpu().tolist(),
                 'motion_uncertainty': float(motion['uncertainty'][0]), 'snapshot': snapshot,
@@ -219,16 +238,35 @@ class ObservedGOLATracker:
                               identity=self.identity[None].expand(count,-1),
                               motion=descriptor[None].expand(count,-1),
                               word_statistics=receiver.new_tensor(statistics))
-        choice = int(result['word_quality'].argmax())
-        written = int(result['accept'][choice].sum())
+        # Select only candidates that pass the explicit word-level abstention and gain gate.
+        # A frame with no eligible candidate returns the original head output byte-for-byte.
+        # Gain is a safety gate; among eligible words, calibrated usefulness is the ranking
+        # signal.  Multiplying by a noisy regression estimate would make selection unstable.
+        scores = result['word_quality']
+        eligible = result['word_accept'] & (result['accept'].sum(-1) > 0)
+        if bool(eligible.any()):
+            masked_scores = scores.masked_fill(~eligible, float('-inf'))
+            choice = int(masked_scores.argmax())
+            written = int(result['accept'][choice].sum())
+        else:
+            choice = -1
+            written = 0
         if written:
             with torch.autocast('cuda', dtype=torch.float16, enabled=self.amp):
                 final_out = self.model.head(result['reconstructed'][choice:choice+1])
         else:
             # Return the original AMP head result byte-for-byte on an erasure.
             final_out = original_out
-        return final_out, {'word_quality': float(result['word_quality'][choice]),
-                           'written_tokens': written, 'offered_words': count}
+        return final_out, {
+            'selected_word': choice,
+            'word_quality': float(result['word_quality'][choice]) if choice >= 0 else 0.,
+            'abstain_probability': float(result['abstain_probability'][choice]) if choice >= 0 else 1.,
+            'expected_gain': float(result['expected_gain'][choice]) if choice >= 0 else 0.,
+            'gain_std': float(result['gain_std'][choice]) if choice >= 0 else 0.,
+            'gain_lcb': float(result['gain_lcb'][choice]) if choice >= 0 else 0.,
+            'abstained': choice < 0,
+            'written_tokens': written, 'offered_words': count,
+        }
 
     @torch.no_grad()
     def initialization_reference(self, image):
