@@ -25,6 +25,8 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--diag-steps", type=int, default=120)
     ap.add_argument("--abstain-threshold", type=float, default=0.25)
+    ap.add_argument("--residual-clip-ratio", type=float, default=0.05)
+    ap.add_argument("--topk", type=int, default=4)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--clip-length", type=int, default=4)
     ap.add_argument("--val-count", type=int, default=3,
@@ -151,7 +153,8 @@ def main() -> None:
     cfg["model"]["codetrack"]["motion_enabled"] = True
     cfg["model"]["codetrack"]["memory_enabled"] = False
     cfg["model"]["codetrack"]["template_protection"] = False
-    cfg["model"]["codetrack"]["topk_tokens"] = 4
+    cfg["model"]["codetrack"]["topk_tokens"] = int(args.topk)
+    cfg["model"]["codetrack"]["residual_clip_ratio"] = float(args.residual_clip_ratio)
     cfg["model"]["codetrack"]["soft_route_training"] = True
     cfg["model"]["codetrack"]["abstain_enabled"] = True
     cfg["model"]["codetrack"]["abstain_threshold"] = float(args.abstain_threshold)
