@@ -21,6 +21,8 @@ identify the exact config, checkpoint, and log used.
 | E0012 | E0011 repeated with seed 43 | same 7/3 holdout, length 4 | n/a | n/a | held-out q-AUROC 0.853; bad-token recovery +0.000372; tracking-loss gain +0.0553; healthy drift 0.000180 | retain; proceed to 10-clip head comparison | [record](E0012-causal-holdout-seed43.md) |
 | E0013 | E0011 final candidate with standalone checkpoint and all-clip probe | 7/3 holdout + all 10 probe clips, seed 42 | n/a | n/a | all-clip q-AUROC 0.747; bad-token recovery +0.000542; tracking-loss gain +0.0458; healthy drift 0.000109 | retain as checkpoint candidate; next run production 10-sequence PR/SR | [record](E0013-final-candidate.md) |
 | E0014 | Production-style 10-sequence evaluation of E0013 candidate | LasHeR-test selected 10, serial, GPU4 | 57.882 | 47.929 | -0.193 / -0.224 pp vs paired GOLA (PR/SR) | reject candidate as final; midredboy and boyunder2baskets are damaging | [record](E0014-candidate-10seq.md) |
+| E0015 | Frame-level baseline-protected write-back, isolated parallel evaluation | LasHeR-test selected 10, GPU4, NPROC=2 | 57.926 | 47.964 | -0.149 / -0.189 pp vs paired GOLA (PR/SR) | reject as final; slight improvement but still below baseline | [record](E0015-baseline-protected.md) |
+| E0016 | CPU prefetch: 8 eval workers + 4 I/O threads | `bike2left` serial correctness check, GPU4 | 94.55 | 81.34 | exact metric match to serial; single-sequence wall time 22.99s | retain as optional full-eval setting; single short sequence is slower due startup overhead | [record](E0016-cpu-prefetch.md) |
 
 ## Current Read
 
