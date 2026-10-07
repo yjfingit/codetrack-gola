@@ -14,6 +14,14 @@ class ModelWithCriterion(nn.Module):
         self.criterion = criterion
 
     def forward(self, samples, targets) -> Any:
+        model = self.model
+        while hasattr(model, "module"):
+            model = model.module
+        if (isinstance(samples, dict) and getattr(model, "codetrack", None) is not None
+                and getattr(model, "codetrack_cfg", None) is not None):
+            # CodeTrack uses labels only to form detached counterfactual diagnosis targets.
+            # The model branch does not use them to build features or make a prediction.
+            samples = {**samples, "training_targets": targets}
         output = auto_unpack_and_call(samples, self.model)
         output = self.criterion(output, targets)
         return output

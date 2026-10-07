@@ -1,0 +1,11 @@
+# Enable the counterfactual token-impact target for the causal diagnosis smoke run.
+- path: "model.codetrack.causal_q_target_enabled"
+  value: true
+- path: "model.codetrack.causal_q_target_tokens"
+  value: 256
+- path: "model.codetrack.causal_q_target_min_ratio"
+  value: 0.25
+- path: "model.codetrack.motion_enabled"
+  value: false
+- path: "model.codetrack.memory_enabled"
+  value: false

@@ -1,0 +1,34 @@
+# Stage-1 causal diagnosis/recovery candidate.  GOLA remains frozen; q uses the
+# counterfactual head-impact target and inference abstains below a calibrated threshold.
+- path: "model.codetrack.causal_q_target_enabled"
+  value: true
+- path: "model.codetrack.causal_q_target_tokens"
+  value: 256
+- path: "model.codetrack.causal_q_target_temperature"
+  value: 2.0
+- path: "model.codetrack.causal_q_target_min_ratio"
+  value: 0.25
+- path: "model.codetrack.h_layout"
+  value: grid
+- path: "model.codetrack.h_free_edge_frac"
+  value: 0.0
+- path: "model.codetrack.abstain_enabled"
+  value: true
+- path: "model.codetrack.abstain_threshold"
+  value: 0.6
+- path: "model.codetrack.topk_tokens"
+  value: 16
+- path: "model.codetrack.satr_rounds"
+  value: 2
+- path: "run.runner.train.stage.max_updates"
+  value: 200
+- path: "run.runner.train.stage.warmup_updates"
+  value: 20
+- path: "run.runner.train.optimization.lr_scheduler.override.t_initial_updates"
+  value: 200
+- path: "run.runner.train.optimization.lr_scheduler.parameters.warmup_updates"
+  value: 20
+- path: "run.data.train.sampler.samples_per_epoch"
+  value: 16384
+- path: "run.runner.train.criteria.lambda_q_prior"
+  value: 0.0

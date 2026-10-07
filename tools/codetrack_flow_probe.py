@@ -26,7 +26,6 @@ def main():
                         default=ROOT / 'config/GOLA/codetrack_s1/config.yaml')
     parser.add_argument('--checkpoint', type=Path, default=None)
     parser.add_argument('--topk', type=int, default=None)
-    parser.add_argument('--disable-diffusion', action='store_true')
     parser.add_argument('--source-package', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -51,8 +50,6 @@ def main():
     cfg['model']['codetrack']['corruption_enabled'] = False
     if args.topk is not None:
         cfg['model']['codetrack']['topk_tokens'] = int(args.topk)
-    if args.disable_diffusion:
-        cfg['model']['codetrack']['diffusion_enabled'] = False
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
     model.load_state_dict(load_file(str(ROOT / 'weights/gola_b224.bin')), strict=False)
     if args.checkpoint is not None:

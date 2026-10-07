@@ -11,7 +11,8 @@ source scripts/00_env.sh
 
 SEQ="${SEQ:-10runone}"
 CONFIG="${CONFIG:-codetrack_eval}"
-VIEW="$PWD/data/LasHeR_single"
+MIXIN_CONFIG="${MIXIN_CONFIG:-}"
+VIEW="${VIEW:-$PWD/data/LasHeR_single}"
 OUT="${OUT:-$PWD/outputs/codetrack_eval_$SEQ}"
 CONSTS="$PWD/consts.yaml"
 
@@ -39,6 +40,21 @@ assert hit == 1, f"expected 1 LasHeR_PATH line, found {hit}"
 open(path, 'w').write(''.join(out))
 PY
 export TRACKIT_CONSTS_PATH="$RUN_CONSTS"
+if [[ -n "${RECOVERY_SCALE:-}" ]]; then
+  export CODETRACK_RECOVERY_SCALE="$RECOVERY_SCALE"
+fi
+if [[ -n "${ACCEPT_SCORE_DELTA:-}" ]]; then
+  export CODETRACK_ACCEPT_SCORE_DELTA="$ACCEPT_SCORE_DELTA"
+fi
+if [[ -n "${ABSTAIN_THRESHOLD:-}" ]]; then
+  export CODETRACK_ABSTAIN_THRESHOLD="$ABSTAIN_THRESHOLD"
+fi
+if [[ -n "${AUX_ANCHOR_SCALE:-}" ]]; then
+  export CODETRACK_AUX_ANCHOR_SCALE="$AUX_ANCHOR_SCALE"
+fi
+if [[ "${TOKEN_ACCEPT:-0}" == "1" ]]; then
+  export CODETRACK_TOKEN_ACCEPT=1
+fi
 echo "[view] TRACKIT_CONSTS_PATH=$RUN_CONSTS (LasHeR_PATH -> $VIEW/)"
 echo "[run ] CodeTrack inference on sequence: $SEQ"
 
@@ -51,10 +67,16 @@ else
   echo "[init] using the pretrained GOLA checkpoint $WEIGHT"
 fi
 
+MIXIN_ARGS=()
+if [[ -n "$MIXIN_CONFIG" ]]; then
+  MIXIN_ARGS+=(--mixin_config "$MIXIN_CONFIG")
+fi
+
 "$PYTHON" main.py GOLA "$CONFIG" \
   --eval \
   --distributed_nproc_per_node 1 \
   --device cuda \
   --disable_wandb \
+  "${MIXIN_ARGS[@]}" \
   "${WEIGHT_ARG[@]}" \
   --output_dir="$OUT"

@@ -5,9 +5,9 @@
 # boundary -- with the pair sampler these modules would mix unrelated sequences, which is why
 # codetrack_spatial.yaml exists and why S1/S2/S3 use it.
 #
-# The sampler and the reset are NOT implemented yet; see docs/staged_training_design.md section 9
-# (B2/B3/B4).  Until they are, this config may be used to validate optimizer wiring and the
-# temporal loss terms, but it must NOT be read as a working temporal training setup.
+# A causal state-preservation hook is now implemented in CodeTrack (`preserve_state=True`).
+# The data sampler still emits pairs, so this config is not a complete temporal training recipe
+# until the clip sampler passes that flag at every non-boundary frame.
 # CodeTrack branch hyper-parameters.  Values are the ones annotated on the architecture
 # figure; see codetrack/config.py for the full schema.
 enabled: true
@@ -41,7 +41,7 @@ memory_frames: 3
 memory_tokens: 8
 memory_dim: 128
 
-# block 5 -- selective recovery + noising-denoising correction
+# block 5 -- selective Tanner recovery
 topk_tokens: 32          # K_max, 12.5% of N
 num_neighbours: 8        # K_n
 refiner_hidden: 256      # 768 -> 256 -> 768

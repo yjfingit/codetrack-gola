@@ -16,8 +16,7 @@ Wiring, exactly as the figure:
         |
         +-- (3) ECC diagnosis   X_t, X_aux -> H_bar -> s (B,64) -> q (B,256)
         |
-        +-- (5) Selective recovery  TopK(q) -> H-routed sparse attention -> X''
-        |       then noise-modulated 2-step denoising -> X_t'
+        +-- (5) Selective recovery  TopK(q) -> Tanner recovery rounds -> X_t'
         |
         +-- (6) Template protection  c_t gates the score>0.84 rule
         v
@@ -47,6 +46,7 @@ from .ecc import ParityCheckMatrix, SyndromeDiagnosis, NeuralBPSyndromeDiagnosis
 from .motion import KalmanMotionPrior, TemporalMemory
 from .recovery import SATRRecovery
 from .template import TemplateProtectionGate
+from .syndrome_bp import VisualSyndromeDiagnosis
 
 
 def _merge_corruption_flags(token_flag: Optional[torch.Tensor],
@@ -84,9 +84,11 @@ class CodeTrack(nn.Module):
             links_per_check=cfg.h_links_per_check,
             min_col_degree=cfg.h_min_col_degree, grid=cfg.grid,
             locality_window=cfg.h_locality_window, locality_wrap=cfg.h_locality_wrap,
-            free_edge_frac=cfg.h_free_edge_frac, seed=cfg.h_seed)
-        diagnosis_cls = (NeuralBPSyndromeDiagnosis
-                         if cfg.decoder_type == "neural_bp" else SyndromeDiagnosis)
+            free_edge_frac=cfg.h_free_edge_frac, seed=cfg.h_seed,
+            layout=cfg.h_layout)
+        diagnosis_cls = {"neural_bp": NeuralBPSyndromeDiagnosis,
+                         "legacy": SyndromeDiagnosis,
+                         "syndrome_bp": VisualSyndromeDiagnosis}[cfg.decoder_type]
         diagnosis_kwargs = dict(
             dim=cfg.dim, mid_dim=cfg.mid_dim, num_checks=cfg.num_checks,
             num_variables=cfg.x_len, syndrome_hidden=cfg.syndrome_hidden,
@@ -98,8 +100,14 @@ class CodeTrack(nn.Module):
         else:
             diagnosis_kwargs.update(bp_iterations=cfg.bp_iterations,
                                     bp_damping=cfg.bp_damping,
-                                    explicit_syndrome_weight=cfg.explicit_syndrome_weight)
+                                    explicit_syndrome_weight=cfg.explicit_syndrome_weight,
+                                    center_logits=bool(getattr(cfg, "center_bp_logits", False)))
         self.diagnosis = diagnosis_cls(**diagnosis_kwargs)
+        if bool(getattr(cfg, "freeze_vote_bias", False)) and hasattr(self.diagnosis, "vote_bias"):
+            # Keep the channel prior fixed while learning syndrome evidence. Otherwise the
+            # decoder can lower every q by moving one global bias instead of learning which
+            # tokens are unreliable.
+            self.diagnosis.vote_bias.requires_grad_(False)
         # variable -> variable relation used for H-routing (from the same incidence)
         # ``persistent=False`` on purpose: upstream ``GOLA_DINOv2.state_dict`` walks every
         # key and calls ``get_parameter`` on it, which raises for a persistent buffer it does
@@ -128,7 +136,9 @@ class CodeTrack(nn.Module):
             num_neighbours=cfg.num_neighbours, memory_dim=cfg.memory_dim,
             dropout=cfg.refiner_dropout, residual_gate_init=cfg.residual_gate_init,
             motion_bias_scale=cfg.motion_bias_scale, up_init_std=cfg.up_init_std,
-            motion_bias_normalise=cfg.motion_bias_normalise, rounds=cfg.satr_rounds)
+            motion_bias_normalise=cfg.motion_bias_normalise, rounds=cfg.satr_rounds,
+            residual_clip_ratio=cfg.residual_clip_ratio,
+            cross_modal_anchor_scale=cfg.cross_modal_anchor_scale)
 
         # SATR owns all correction rounds. There is no dense denoiser/diffusion path.
 
@@ -150,6 +160,10 @@ class CodeTrack(nn.Module):
         self._prev_admitted = False
         self._gate_inputs = None
 
+        self._motion_crop_params = None
+        self._motion_crop_size = None
+        self._motion_observe_current = False
+
     # ------------------------------------------------------------------ helpers
     def reset_sequence(self) -> None:
         """Clear per-sequence recurrent state (Kalman filter + memory bank)."""
@@ -164,6 +178,9 @@ class CodeTrack(nn.Module):
         self._gate_inputs = None
         if self.memory is not None:
             self.memory._admitted_once = False
+        self._motion_crop_params = None
+        self._motion_crop_size = None
+        self._motion_observe_current = False
 
     def _split(self, F_L: torch.Tensor) -> Dict[str, torch.Tensor]:
         z, x = self.z_len, self.x_len
@@ -232,6 +249,12 @@ class CodeTrack(nn.Module):
         self._prev_score = score.detach().reshape(score.shape[0])
         if box_xywh is not None:
             self._prev_box = box_xywh.detach().reshape(box_xywh.shape[0], 4)
+            if self._motion_observe_current and self.motion is not None:
+                # The caller supplies the accepted current-frame prediction AFTER
+                # recovery. The next prior includes it without a one-frame lag.
+                self.motion.observe(self._prev_box, self._motion_crop_size,
+                                    confidence=self._prev_score, predict=False)
+                self._motion_observe_current = False
         # The current score is only available AFTER recovery and the tracking head.
         # Refresh the evaluation decision now, using this frame's diagnostic evidence.
         if not self.training and self.template_gate is not None and self._gate_inputs is not None:
@@ -259,6 +282,9 @@ class CodeTrack(nn.Module):
                 image_corruption_mask: Optional[torch.Tensor] = None,
                 observe_motion: bool = True,
                 update_state: bool = True,
+                preserve_state: bool = False,
+                route_q_override: Optional[torch.Tensor] = None,
+                search_crop_params: Optional[torch.Tensor] = None,
                 **_: object) -> Dict[str, torch.Tensor]:
         """``F_L``: (B, 768, 768) normalised fused tokens from the GOLA forward.
 
@@ -274,7 +300,11 @@ class CodeTrack(nn.Module):
         # random batch into the next creates physically meaningless transitions and can make the
         # covariance solve unstable.  Recurrent state is reserved for causal sequence inference;
         # training still exercises the motion and memory heads on the current frame.
-        if self.training and update_state:
+        # Pair training keeps the historical reset-on-call behavior.  A causal clip sampler
+        # passes ``preserve_state=True`` so Kalman and temporal memory survive between adjacent
+        # frames from the same sequence; the explicit boundary reset is then performed by the
+        # sampler at clip start.
+        if self.training and update_state and not preserve_state:
             self.reset_sequence()
         # Dynamic evaluation scheduling may emit a shorter final batch. All recurrent
         # and template-gate state is batch-shaped; carrying the previous layout causes
@@ -292,6 +322,14 @@ class CodeTrack(nn.Module):
             # Counterfactual: remove cross-modal side information while keeping the tracked
             # TIR stream and all other state identical.
             X_aux = torch.zeros_like(X_aux)
+        # Optional controlled side-information attenuation.  Scaling around X_t keeps the
+        # diagnosis input in the same feature distribution as a real modality, unlike setting
+        # RGB to zero (which is an out-of-distribution intervention and can move the whole q
+        # prior).  This is used for reliability ablations; the default path is unchanged.
+        aux_blend = os.environ.get("CODETRACK_AUX_BLEND")
+        if aux_blend is not None and not ablate_aux:
+            blend = float(aux_blend)
+            X_aux = X_t + blend * (X_aux - X_t)
 
         # ---- template context (initial + online, both modalities) --------------
         template_tokens = torch.cat(
@@ -303,6 +341,21 @@ class CodeTrack(nn.Module):
         pending_obs: Optional[torch.Tensor] = None
         pending_conf: Optional[torch.Tensor] = None
         if self.motion is not None and not ablate_motion:
+            crop_aware = search_crop_params is not None
+            if crop_aware:
+                if image_size is None:
+                    raise ValueError("crop-aware motion requires image_size")
+                params = search_crop_params.detach().to(X_t).reshape(b, 2, 2)
+                if self._motion_crop_params is not None:
+                    old = self._motion_crop_params.to(params)
+                    old_size = self._motion_crop_size.to(image_size)
+                    ratio = params[:, 0] / old[:, 0]
+                    scale = ratio * old_size / image_size
+                    shift = (params[:, 1] - ratio * old[:, 1]) / image_size
+                    self.motion.rebase(scale, shift)
+                self._motion_crop_params = params
+                self._motion_crop_size = image_size.detach()
+                self._motion_observe_current = True
             # ---- D2: predict-only, then observe AFTER this frame is consumed --------
             # The order here is what makes the block causal.  ``observe()`` used to run
             # *before* the prior map was built, so M_t was a function of the current frame's
@@ -316,7 +369,7 @@ class CodeTrack(nn.Module):
                 admitted = gt_box_xywh
             elif box_confidence is not None and gt_box_xywh is not None:
                 admitted = gt_box_xywh
-            elif eval_observe and self._prev_box is not None:
+            elif eval_observe and self._prev_box is not None and not crop_aware:
                 # Inference: the previous frame's own prediction is the only legitimate
                 # observation available (there is no ground truth while tracking).
                 admitted = self._prev_box
@@ -326,7 +379,7 @@ class CodeTrack(nn.Module):
                 box_xywh=admitted, image_size=image_size,
                 confidence=admitted_conf, valid=None,
                 batch_size=b, device=X_t.device, dtype=X_t.dtype,
-                defer_observe=True)
+                defer_observe=True, advance=crop_aware)
         motion_map = motion_out.get("motion_map")
         uncertainty = motion_out.get("uncertainty")
 
@@ -347,9 +400,21 @@ class CodeTrack(nn.Module):
 
         # ---- block 3: ECC diagnosis ------------------------------------------
         H_bar = self.H.matrix()
-        diag = self.diagnosis(X_t, X_aux, H_bar, template_context=template_ctx)
+        evidence_kwargs = {}
+        if getattr(self.diagnosis, "uses_motion_evidence", False):
+            evidence_kwargs = {"motion_map": motion_map, "uncertainty": uncertainty}
+        diag = self.diagnosis(X_t, X_aux, H_bar, template_context=template_ctx,
+                              **evidence_kwargs)
         out_s = diag["s"]
         q = diag["q"]
+        if route_q_override is not None:
+            if route_q_override.shape != q.shape:
+                raise ValueError(
+                    f"route_q_override shape {tuple(route_q_override.shape)} != q shape {tuple(q.shape)}")
+            # Oracle routing is a diagnostic intervention only. It changes the SATR route while
+            # leaving the learned syndrome/q outputs available for comparison and never becomes
+            # part of a production checkpoint.
+            q = route_q_override.to(dtype=q.dtype, device=q.device)
         if ablate_bp and "symbol_logits" in diag:
             # Counterfactual decoder: retain the learned per-token symbol evidence but remove
             # Tanner check-to-variable messages. This isolates BP from the syndrome encoder.
@@ -406,8 +471,35 @@ class CodeTrack(nn.Module):
         q_mu = q.mean(dim=-1, keepdim=True)
         q_sd = q.std(dim=-1, keepdim=True, unbiased=False).clamp(min=1e-6)
         q_relative = torch.sigmoid((q - q_mu) / q_sd)
-        route_k = min(int(self.cfg.topk_tokens), q.shape[-1])
-        route_idx = q.topk(route_k, dim=-1).indices
+        soft_route = bool(self.training and getattr(self.cfg, "soft_route_training", False))
+        if os.environ.get("CODETRACK_SOFT_ROUTE", "0") == "1":
+            soft_route = bool(self.training)
+        if self.cfg.match_inference_route_training:
+            soft_route = False
+        route_k = q.shape[-1] if soft_route else min(
+            int(os.environ.get("CODETRACK_TOPK_TOKENS", self.cfg.topk_tokens)), q.shape[-1])
+        route_score = q
+        motion_route_scale = float(os.environ.get("CODETRACK_MOTION_ROUTE_SCALE", str(self.cfg.motion_route_scale)))
+        if (not self.training) and motion_map is not None and motion_route_scale != 0.0:
+            mp = motion_map.reshape(b, -1)
+            mp = mp / mp.amax(dim=-1, keepdim=True).clamp_min(1e-6)
+            route_score = q * (1.0 + motion_route_scale * mp)
+        if soft_route:
+            route_idx = torch.arange(q.shape[-1], device=q.device).view(1, -1).expand(b, -1)
+        else:
+            route_idx = route_score.topk(route_k, dim=-1).indices
+        # Optional target-cell redundancy route.  The original GOLA head supplies the current
+        # best signal location; including it guarantees that the ECC branch can actually affect
+        # the token consumed by the tracking decision when syndrome ranking misses that cell.
+        # This is disabled by default and is evaluated as a causal routing ablation.
+        if (not self.training) and os.environ.get("CODETRACK_INCLUDE_BASE_CELL", "0") == "1" \
+                and self.head is not None:
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                base_map = self.head(X_t.float())["score_map"].float().flatten(1)
+                base_cell = base_map.argmax(dim=-1)
+            if route_k > 0:
+                route_idx[:, -1] = base_cell
+        # Recompute route scores after the optional union so gather/scatter use the same support.
         route_support = torch.zeros_like(q)
         route_support.scatter_(1, route_idx, 1.0)
         # Inference uses an abstention rule from reliable communication: if the
@@ -418,8 +510,21 @@ class CodeTrack(nn.Module):
             "CODETRACK_ABSTAIN_THRESHOLD") is not None
         abstain_threshold = float(os.environ.get(
             "CODETRACK_ABSTAIN_THRESHOLD", self.cfg.abstain_threshold))
-        if (not self.training) and abstain_enabled:
+        if (not self.training or self.cfg.match_inference_route_training) and abstain_enabled:
             route_support = route_support * (q >= abstain_threshold).to(q.dtype)
+        adaptive_route = bool(getattr(self.cfg, "adaptive_route_enabled", False)) or \
+            os.environ.get("CODETRACK_ADAPTIVE_ROUTE", "0") == "1"
+        if (not self.training) and adaptive_route:
+            # q is a posterior, but its absolute calibration can drift by sequence.  The second
+            # cut is therefore relative to the current frame: only tokens that are both above
+            # the absolute reliability threshold and z standard deviations above the frame mean
+            # are decoded.  `route_k` remains a hard safety budget, not a fixed write count.
+            z = float(os.environ.get("CODETRACK_ADAPTIVE_ROUTE_Z",
+                                    str(getattr(self.cfg, "adaptive_route_z", 1.0))))
+            q_cut = torch.maximum(
+                q.new_full((b, 1), abstain_threshold),
+                q.mean(dim=-1, keepdim=True) + z * q.std(dim=-1, keepdim=True, unbiased=False))
+            route_support = route_support * (q >= q_cut).to(q.dtype)
         # Optional out-of-view safeguard.  A Kalman prediction whose box is close to the
         # search-region boundary is not reliable side information: carrying history into that
         # frame can manufacture a target after it has left the image.  The margin is expressed
@@ -472,7 +577,19 @@ class CodeTrack(nn.Module):
                 base_peak_for_route = base_for_route["score_map"].float().flatten(1).sigmoid().amax(dim=-1)
             route_support = route_support * (
                 base_peak_for_route >= float(response_threshold)).to(q.dtype).unsqueeze(-1)
-        q_route = q_relative * route_support
+        # Soft training uses calibrated probabilities directly.  Relative standardisation is
+        # useful for a fixed inference budget but destroys absolute q semantics during fitting.
+        if self.cfg.match_inference_route_training:
+            q_route = q * route_support
+        elif soft_route:
+            # The configured detection prior is the no-error operating point.  During fitting,
+            # routing the raw q would write a nonzero residual into every token at initialization
+            # (q starts at the prior, usually 0.2).  A quadratic soft gate keeps that path close
+            # to identity while retaining a dense gradient; inference still uses the calibrated
+            # q-relative Top-K route below.
+            q_route = q.square() * route_support
+        else:
+            q_route = q_relative * route_support
         if ablate_satr:
             rec = {"X_rec": X_t, "suspect_index": route_idx,
                    "suspect_score": q_route.gather(1, route_idx),
@@ -484,10 +601,63 @@ class CodeTrack(nn.Module):
                 X_t=X_t, X_aux=X_aux, q=q_route, neighbour_index=self.neighbour_index,
                 H_bar=H_bar, bp_messages=diag.get("bp_messages"), syndrome=out_s,
                 template_pool=template_ctx, memory_readout=prior_tokens,
-                motion_map=motion_map, topk=self.cfg.topk_tokens,
+                motion_map=motion_map, topk=route_k,
                 neighbour_q=q if reliability_scale != 0.0 else None,
                 reliability_bias_scale=reliability_scale)
         X_rec = rec["X_rec"]
+        # Optional Tanner propagation write: distribute a small fraction of each decoded
+        # residual to variables sharing a check with the suspect. This is disabled by default;
+        # it tests whether the head-relevant error is a propagated token rather than the q-ranked
+        # source itself.
+        spread = float(os.environ.get("CODETRACK_TANNER_SPREAD", "0.0"))
+        if (not self.training) and spread != 0.0 and not ablate_satr:
+            support = (H_bar > 0).to(X_t.dtype)
+            shared = (support.t() @ support) > 0
+            shared.fill_diagonal_(False)
+            for jj in range(rec["suspect_index"].shape[1]):
+                src = rec["suspect_index"][:, jj]
+                src_delta = rec["delta"][:, jj] * spread
+                for bb in range(b):
+                    nb_idx = torch.where(shared[src[bb]])[0]
+                    if nb_idx.numel() == 0:
+                        continue
+                    X_rec[bb, nb_idx] = X_rec[bb, nb_idx] + src_delta[bb] / float(nb_idx.numel())
+        # Optional token-level repair gate.  It evaluates each sparse candidate against the
+        # frozen GOLA response before committing it.  This is the inference counterpart of the
+        # causal repair-gain probe: a frame-level peak check can hide one bad token behind one
+        # good token, whereas this gate only writes candidates that do not lower the baseline
+        # response. Disabled by default because it costs K extra head calls.
+        token_accept = os.environ.get("CODETRACK_TOKEN_ACCEPT", "0") == "1"
+        token_accept_mask = None
+        if (not self.training) and token_accept and self.head is not None and not ablate_satr:
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                base_pred = self.head(X_t.float())
+                base_map = base_pred["score_map"].float().sigmoid()
+                base_flat = base_map.flatten(1)
+                base_cell = base_flat.argmax(dim=-1)
+                base_score = base_flat.gather(1, base_cell[:, None]).squeeze(1)
+                base_boxes = base_pred["boxes"].float().reshape(b, -1, 4)
+                base_box = base_boxes.gather(1, base_cell[:, None, None].expand(-1, 1, 4)).squeeze(1)
+                gated = X_t.clone()
+                token_accept_mask = torch.zeros_like(rec["suspect_score"], dtype=torch.bool)
+                for jj in range(rec["suspect_index"].shape[1]):
+                    cand = gated.clone()
+                    bj = torch.arange(b, device=X_t.device)
+                    ij = rec["suspect_index"][:, jj]
+                    cand[bj, ij] = X_rec[bj, ij]
+                    cand_pred = self.head(cand.float())
+                    cand_map = cand_pred["score_map"].float().sigmoid().flatten(1)
+                    cand_score = cand_map.gather(1, base_cell[:, None]).squeeze(1)
+                    cand_box = cand_pred["boxes"].float().reshape(b, -1, 4).gather(
+                        1, base_cell[:, None, None].expand(-1, 1, 4)).squeeze(1)
+                    # Target-cell gate: preserve the causal location selected by the original
+                    # tracker and reject geometric jumps. This avoids the failure of comparing
+                    # only the global peak, which can move to a distractor after one token write.
+                    box_delta = (cand_box - base_box).abs().mean(dim=-1)
+                    take = (cand_score >= base_score) & (box_delta <= 0.05)
+                    gated[bj, ij] = torch.where(take[:, None], X_rec[bj, ij], gated[bj, ij])
+                    token_accept_mask[:, jj] = take
+                X_rec = gated
         recovery_scale = float(os.environ.get("CODETRACK_RECOVERY_SCALE", "1.0"))
         if (not self.training) and recovery_scale != 1.0:
             X_rec = X_t + recovery_scale * (X_rec - X_t)
@@ -512,7 +682,6 @@ class CodeTrack(nn.Module):
         # denoiser or diffusion rewrite follows the correction.
         suspect = rec["suspect_index"]
         X_final = X_rec
-        den = {"X_denoised": X_final, "step_preds": []}
         mv = None
 
         # Post-decode parity evidence.  This is the visual analogue of checking whether a
@@ -587,19 +756,23 @@ class CodeTrack(nn.Module):
                 }
 
         # ---- D2: absorb this frame's observation LAST ---------------------------
-        # Everything above (the prior map, the recovery routing, the denoiser, the gate) has
+        # Everything above (the prior map, the recovery routing and the gate) has
         # already consumed x_{t|t-1}.  Updating the filter now leaves the state at x_{t|t} so
         # the *next* frame predicts from a posterior that includes this frame -- the correct
         # causal ordering.  ``pending_conf`` is the observation confidence, which inflates the
         # measurement noise, so a low-confidence box moves the state only slightly.
         if self.motion is not None and pending_obs is not None and image_size is not None:
             self.motion.observe(pending_obs, image_size,
-                                confidence=pending_conf, valid=None)
+                                confidence=pending_conf, valid=None,
+                                predict=(search_crop_params is None))
 
         return {
             "X_final": X_final,
             "X_rec": X_rec,
             "q": q, "s": diag["s"], "s_logits": diag["s_logits"], "q_logits": diag["q_logits"],
+            "q_prior": q.new_tensor(float(self.cfg.detection_prior)),
+            "channel_logits": diag.get("channel_logits"),
+            "parity_logits": diag.get("parity_logits"),
             "syndrome_pending_calibration": diag.get("syndrome_pending_calibration"),
             "C_obs": diag["C_obs"], "C_ref": diag["C_ref"],
             "syndrome_energy_before": check_before,
@@ -620,6 +793,6 @@ class CodeTrack(nn.Module):
             "decode_gate": decode_gate,
             "motion_target": motion_target,
             "preserve": preserve,
-            "denoise_steps": den["step_preds"],
+            "token_accept_mask": token_accept_mask,
             **gate_out,
         }

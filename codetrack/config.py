@@ -35,6 +35,7 @@ class CodeTrackConfig:
     h_links_per_check: int = 12           # d_c  (M*d_c = 768 = N*d_v)
     h_min_col_degree: int = 3             # d_v
     h_locality_window: int = 0            # 0 = unrestricted sampling
+    h_layout: str = "random"              # deterministic grid or seeded random checks
     # share of each check's edges drawn from the global pool instead of its local window.
     # 0 = purely local (a syndrome can only report "something near this check"),
     # 1 = purely random (no addressability).  0.25 was the starting value.
@@ -48,6 +49,10 @@ class CodeTrackConfig:
     bp_damping: float = 0.5
     abstain_enabled: bool = False
     abstain_threshold: float = 0.5
+    # Use the same posterior, support and abstention rule in recovery training
+    # and inference. Two-stage fitting can freeze diagnosis instead of relaxing
+    # the student route or supplying augmentation labels as an oracle.
+    match_inference_route_training: bool = False
     # Inference-only reliability controls.  The learned frame gate reuses the template-trust
     # estimator; the geometric edge margin is a hard out-of-view safety constraint.  Both are
     # disabled by default so old checkpoints reproduce the original SATR path.
@@ -77,8 +82,8 @@ class CodeTrackConfig:
     refiner_hidden: int = 256             # 768 -> 256 -> 768
     refiner_heads: int = 4
     refiner_dropout: float = 0.0
-    # Residual-gate bias for both the refiner and the denoiser.  The correction is written
-    # back as ``sigmoid(gate) * delta``, so this single scalar controls BOTH how close
+    # Residual-gate bias for the Tanner refiner.  The correction is written
+    # back as ``sigmoid(gate) * delta``, so this single scalar controls how close
     # stage 0 is to the GOLA baseline and how much gradient reaches the upstream branches.
     # A gate at -8 attenuates gradients by ~1500x relative to 0.  Small nonzero output
     # weights now control initial correction size; start the trainable gate at sigmoid(0)=0.5.
@@ -87,19 +92,35 @@ class CodeTrackConfig:
     # ``bias = log(motion_map) * motion_bias_scale``.  This is the only knob governing how
     # strongly the motion prior steers evidence routing (0 = motion ignored by the refiner).
     motion_bias_scale: float = 0.5
+    motion_route_scale: float = 0.0
     # Centre and standardise the log-space motion bias before scaling it.  Without this the
     # bias is a near-constant (measured logit spread 0.05 nats over 8 neighbours, because the
     # unit-mass motion map sits at 1/256 +- 2e-3), so the Kalman prior cannot influence
     # attention at all.  False reproduces the pre-2026-10-04 numerics exactly.
     motion_bias_normalise: bool = True
     # Init std of the residual predictor's output layer inside BOTH the refiner and the
-    # denoiser.  Replaces the old "large negative residual gate" idiom: a small nonzero
+    # refiner. Replaces the old "large negative residual gate" idiom: a small nonzero
     # ``up`` keeps step-0 output near identity while leaving the conditioning paths their
     # gradient.  See codetrack/recovery.py for the measurements behind this.
     up_init_std: float = 0.005
 
     # SATR performs three explicit Tanner message rounds and writes one sparse residual.
     satr_rounds: int = 3
+    # Bound a single decoded residual relative to the received token.  This prevents a sparse
+    # but wrong route from producing a large feature jump; 0 disables the bound for ablations.
+    residual_clip_ratio: float = 0.05
+    # Optional deterministic cross-modal parity anchor for diagnosis.  It adds a bounded
+    # direction from RGB side information toward the received TIR token; zero preserves the
+    # learned SATR path and is the production default.
+    cross_modal_anchor_scale: float = 0.0
+    # Inference route policy. `topk_tokens` is the maximum budget; adaptive routing chooses a
+    # smaller per-frame support from q and may choose zero tokens.
+    adaptive_route_enabled: bool = False
+    adaptive_route_z: float = 1.0
+    # Training-only dense soft route.  Hard Top-K is kept for inference, but using it while
+    # fitting gives q gradients only on the selected tokens and creates a train/eval mismatch.
+    # With this switch every token receives q_i * DeltaX_i; the inference budget is unchanged.
+    soft_route_training: bool = False
 
     # ---- block 6: online template protection --------------------------------
     template_protection: bool = True
@@ -180,7 +201,20 @@ class CodeTrackConfig:
     corruption_spatial_mode: str = "random"
     corruption_severity: float = 0.4
     diagnosis_alpha: float = 0.5          # e* = a*e_feat + (1-a)*e_task
+    # When enabled during training, compute a causal token-impact target by replacing one
+    # corrupted head token with its clean counterpart.  This is deliberately opt-in because
+    # it adds a small batched head-probe cost; the target is the tracking-relevant signal for q,
+    # while the injector mask remains only a coverage diagnostic.
+    causal_q_target_enabled: bool = False
+    causal_q_target_tokens: int = 256
+    causal_q_target_temperature: float = 2.0
+    causal_q_target_min_ratio: float = 0.25
     detection_prior: float = 0.2          # syndrome sigmoid bias init
+    freeze_vote_bias: bool = False
+    center_bp_logits: bool = False
+    # Optional mean-q anchor.  It prevents the learnable BP vote bias from collapsing to an
+    # all-healthy solution when the diagnosis branch is trained without the GOLA adapters.
+    lambda_q_prior: float = 0.0
     # Initial gain on the raw syndrome logit.  The stock head produces s_raw with a spread of
     # only ~0.2 over 64 checks, so s = sigmoid(s_raw) is a point mass at 0.794 and every
     # consumer of q degenerates (constant q -> random TopK routing, non-selective noise gate,
@@ -238,7 +272,9 @@ class CodeTrackConfig:
             raise ValueError("num_neighbours exceeds x_len")
         if self.mid_dim <= 0 or self.refiner_hidden <= 0:
             raise ValueError("mid_dim and refiner_hidden must be positive")
-        if self.decoder_type not in {"legacy", "neural_bp"}:
-            raise ValueError("decoder_type must be 'legacy' or 'neural_bp'")
+        if self.decoder_type not in {"legacy", "neural_bp", "syndrome_bp"}:
+            raise ValueError("decoder_type must be legacy, neural_bp or syndrome_bp")
         if self.bp_iterations < 1:
             raise ValueError("bp_iterations must be positive")
+        if self.h_layout not in {"random", "grid", "binary_cycles"}:
+            raise ValueError("h_layout must be random, grid or binary_cycles")

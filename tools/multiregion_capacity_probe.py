@@ -40,7 +40,6 @@ def main() -> None:
     data = real_batch(view, names)
     cfg = load_stage_config(str(ROOT / "config/GOLA/codetrack_s1/config.yaml"))
     cfg["model"]["codetrack"]["corruption_enabled"] = False
-    cfg["model"]["codetrack"]["diffusion_enabled"] = False
     cfg["model"]["codetrack"]["topk_tokens"] = args.topk
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
     state = load_file(str(args.checkpoint))

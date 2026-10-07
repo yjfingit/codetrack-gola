@@ -57,7 +57,8 @@ def build_sparse_support(num_checks: int, num_variables: int,
                          grid: int, locality_window: int = 0,
                          locality_wrap: bool = True,
                          free_edge_frac: float = 0.25,
-                         seed: int = 1234) -> torch.Tensor:
+                         seed: int = 1234,
+                         layout: str = "random") -> torch.Tensor:
     """Geometrically construct the fixed ``M x N`` parity-check support.
 
     Each check draws most of its edges from a 2-D window on the token grid (a
@@ -70,7 +71,32 @@ def build_sparse_support(num_checks: int, num_variables: int,
     grid = int(grid)
     spatial = grid * grid == num_variables
 
-    if spatial and locality_window > 0:
+    if layout == "binary_cycles":
+        if not spatial or num_checks != num_variables or links_per_check != 4:
+            raise ValueError("binary_cycles requires one four-variable check per grid cell")
+        for y in range(grid):
+            for x in range(grid):
+                corners = [y * grid + x, y * grid + (x + 1) % grid,
+                           ((y + 1) % grid) * grid + x,
+                           ((y + 1) % grid) * grid + (x + 1) % grid]
+                support[y * grid + x, corners] = 1.
+    elif spatial and locality_window > 0 and layout == "grid":
+        side = int(round(num_checks ** 0.5))
+        if side * side != num_checks or grid % side != 0:
+            raise ValueError("grid layout requires square checks dividing token grid")
+        stride = grid // side
+        row_span, col_span = 3, 4
+        for row in range(side):
+            for col in range(side):
+                cy, cx = row * stride, col * stride
+                chosen = []
+                for dy in range(-1, 2):
+                    for dx in range(-2, 2):
+                        yy = (cy + dy) % grid if locality_wrap else min(max(cy + dy, 0), grid - 1)
+                        xx = (cx + dx) % grid if locality_wrap else min(max(cx + dx, 0), grid - 1)
+                        chosen.append(yy * grid + xx)
+                support[row * side + col, torch.tensor(chosen, dtype=torch.long)] = 1.0
+    elif spatial and locality_window > 0:
         yy, xx = torch.meshgrid(torch.arange(grid), torch.arange(grid), indexing="ij")
         coords = torch.stack([yy.reshape(-1), xx.reshape(-1)], dim=1).float()
         half = max(1, int(locality_window) // 2)
@@ -135,11 +161,12 @@ class ParityCheckMatrix(nn.Module):
     def __init__(self, num_checks: int, num_variables: int, links_per_check: int = 12,
                  min_col_degree: int = 3, grid: int = 16, locality_window: int = 0,
                  locality_wrap: bool = True, free_edge_frac: float = 0.25,
-                 seed: int = 1234, learn_weights: bool = True):
+                 seed: int = 1234, learn_weights: bool = True,
+                 layout: str = "random"):
         super().__init__()
         support = build_sparse_support(
             num_checks, num_variables, links_per_check, min_col_degree,
-            grid, locality_window, locality_wrap, free_edge_frac, seed)
+            grid, locality_window, locality_wrap, free_edge_frac, seed, layout)
         # ``persistent=False``: upstream ``GOLA_DINOv2.state_dict`` calls
         # ``get_parameter`` on every key, which raises for an unknown buffer.  The support
         # is a deterministic function of (M, N, d_c, d_v, grid, seed), so it is rebuilt
@@ -395,13 +422,15 @@ class NeuralBPSyndromeDiagnosis(nn.Module):
     def __init__(self, dim: int = 768, mid_dim: int = 128, num_checks: int = 64,
                  num_variables: int = 256, syndrome_hidden: int = 128,
                  detection_prior: float = 0.2, bp_iterations: int = 3,
-                 bp_damping: float = 0.5, explicit_syndrome_weight: float = 0.0):
+                 bp_damping: float = 0.5, explicit_syndrome_weight: float = 0.0,
+                 center_logits: bool = False):
         super().__init__()
         self.num_checks = int(num_checks)
         self.num_variables = int(num_variables)
         self.bp_iterations = int(bp_iterations)
         self.bp_damping = float(bp_damping)
         self.explicit_syndrome_weight = float(explicit_syndrome_weight)
+        self.center_logits = bool(center_logits)
         self.W_x = nn.Linear(dim, mid_dim)
         self.W_r = nn.Linear(dim, mid_dim)
         self.template_ctx = nn.Linear(dim, mid_dim)
@@ -428,6 +457,12 @@ class NeuralBPSyndromeDiagnosis(nn.Module):
         if template_context is not None:
             R = R + self.template_ctx(template_context).unsqueeze(1)
         diff = U - R
+        # Keep the observable check space explicit.  The post-recovery diagnostic consumes
+        # these tensors; exporting BP messages here made ``syndrome_before`` live in a
+        # different space from ``syndrome_after`` and produced a meaningless jump after a
+        # near-identity write-back.
+        C_obs = torch.einsum("mn,bnd->bmd", H_bar, U)
+        C_ref = torch.einsum("mn,bnd->bmd", H_bar, R)
         symbol_logits = self.symbol(torch.cat([diff, diff.abs()], dim=-1)).squeeze(-1)
         support = (H_bar > 0).to(symbol_logits.dtype)
         # Keep learned edge scales bounded and zero at initialization.  The fixed H
@@ -464,12 +499,17 @@ class NeuralBPSyndromeDiagnosis(nn.Module):
             v2c = v2c_new
         var_logits = symbol_logits * self.variable_gain.view(1, -1) + c2v.sum(dim=1)
         parity_vote = torch.einsum("mn,bm->bn", edge, check_z)
+        if self.center_logits:
+            # A fixed channel prior should set the frame-average reliability; BP should only
+            # provide relative token evidence. Centering prevents a global negative message
+            # from collapsing every q while preserving all token-to-token ordering.
+            var_logits = var_logits - var_logits.mean(dim=-1, keepdim=True)
         q_logits = var_logits + self.vote_bias + self.explicit_syndrome_weight * parity_vote
         q = torch.sigmoid(q_logits)
         s_logits = check_logits + self.explicit_syndrome_weight * check_z
         s = torch.sigmoid(s_logits)
         out = {"q": q, "q_logits": q_logits, "s": s, "s_logits": s_logits,
-               "C_obs": v2c, "C_ref": torch.zeros_like(v2c), "U": U, "R": R,
+               "C_obs": C_obs, "C_ref": C_ref, "U": U, "R": R,
                "symbol_logits": symbol_logits, "bp_messages": c2v,
                "check_residual": check_residual, "syndrome_residual": check_z}
         if return_checks:

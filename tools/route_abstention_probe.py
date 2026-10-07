@@ -21,7 +21,6 @@ def main() -> None:
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--topk", type=int, default=64)
-    ap.add_argument("--disable-diffusion", action="store_true")
     ap.add_argument("--gpu", type=int, default=1)
     args = ap.parse_args()
 
@@ -39,8 +38,6 @@ def main() -> None:
     cfg = load_stage_config(str(ROOT / "config/GOLA/codetrack_s1/config.yaml"))
     cfg["model"]["codetrack"]["topk_tokens"] = int(args.topk)
     cfg["model"]["codetrack"]["corruption_enabled"] = False
-    if args.disable_diffusion:
-        cfg["model"]["codetrack"]["diffusion_enabled"] = False
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
     model.load_state_dict(load_file(str(ROOT / "weights/gola_b224.bin")), strict=False)
     model.load_state_dict(load_file(str(args.checkpoint)), strict=False)

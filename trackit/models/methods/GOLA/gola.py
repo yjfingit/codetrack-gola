@@ -155,6 +155,97 @@ class GOLA_DINOv2(nn.Module):
         self._last_token_mask = mask_b
         return x_out, mask_b
 
+    def _causal_token_impact_target(self, corrupted: torch.Tensor,
+                                    clean: torch.Tensor,
+                                    base_head: dict,
+                                    clean_head: dict,
+                                    tracking_targets: Optional[dict] = None,
+                                    max_tokens: int = 256,
+                                    temperature: float = 2.0,
+                                    min_ratio: float = 0.25) -> torch.Tensor:
+        """Estimate which head tokens are worth repairing.
+
+        For token ``i`` we replace only ``corrupted[:, i]`` with ``clean[:, i]`` and
+        measure the reduction in the frozen teacher-output discrepancy.  This is a
+        counterfactual target for the *tracking impact* of a token, rather than a label
+        saying that an injector happened to touch it.  The probe is detached and only
+        enabled for the causal-diagnosis training recipe.
+        """
+        b, n, _ = corrupted.shape
+        count = min(int(max_tokens), n)
+        if count <= 0:
+            return corrupted.new_zeros(b, n)
+        # Replacing an identical observation is a no-op, irrespective of tiny
+        # differences between singleton and batched head kernels.
+        if torch.equal(corrupted, clean):
+            return corrupted.new_zeros(b, n)
+        with torch.no_grad(), torch.autocast('cuda', enabled=False):
+            task_loss_base = None
+            if tracking_targets is not None:
+                from codetrack.criteria import _tracking_loss
+                task_loss_base = _tracking_loss(
+                    base_head, tracking_targets, per_sample=True)[0].detach()
+            else:
+                target_vec = torch.cat([
+                    clean_head["score_map"].float().flatten(1),
+                    clean_head["boxes"].float().flatten(1)], dim=1)
+                base_vec = torch.cat([
+                    base_head["score_map"].float().flatten(1),
+                    base_head["boxes"].float().flatten(1)], dim=1)
+                base_err = (base_vec - target_vec).square().mean(dim=1)
+            impact = corrupted.new_zeros(b, n, dtype=torch.float32)
+            for start in range(0, count, 32):
+                width = min(32, count - start)
+                rows = torch.arange(b, device=corrupted.device).repeat_interleave(width)
+                idx = torch.arange(start, start + width, device=corrupted.device)
+                probe = corrupted.unsqueeze(1).expand(-1, width, -1, -1).reshape(-1, n, corrupted.shape[-1]).clone()
+                probe[torch.arange(probe.shape[0], device=corrupted.device),
+                      idx.repeat(b)] = clean[rows, idx.repeat(b)]
+                pred = self.head(probe)
+                if tracking_targets is not None:
+                    repeated_targets = dict(tracking_targets)
+                    boxes = tracking_targets.get("boxes")
+                    if boxes is not None:
+                        repeated_targets["boxes"] = boxes.repeat_interleave(width, dim=0)
+                    quality = tracking_targets.get("score_quality_map")
+                    if quality is not None:
+                        repeated_targets["score_quality_map"] = quality.repeat_interleave(width, dim=0)
+                    num_pos = tracking_targets.get("num_positive_samples")
+                    if num_pos is not None:
+                        repeated_targets["num_positive_samples"] = num_pos * width
+                    pos_b = tracking_targets.get("positive_sample_batch_dim_indices")
+                    pos_m = tracking_targets.get("positive_sample_map_dim_indices")
+                    if pos_b is not None and pos_m is not None:
+                        offsets = torch.arange(width, device=pos_b.device)
+                        repeated_targets["positive_sample_batch_dim_indices"] = (
+                            pos_b[:, None] * width + offsets[None, :]).reshape(-1)
+                        repeated_targets["positive_sample_map_dim_indices"] = (
+                            pos_m[:, None].expand(-1, width)).reshape(-1)
+                    candidate_loss = _tracking_loss(
+                        pred, repeated_targets, per_sample=True)[0]
+                    impact[:, start:start + width] = (
+                        task_loss_base[rows].reshape(b, width) - candidate_loss.reshape(b, width))
+                else:
+                    pred_vec = torch.cat([pred["score_map"].float().flatten(1),
+                                          pred["boxes"].float().flatten(1)], dim=1)
+                    err = (pred_vec - target_vec[rows]).square().mean(dim=1).reshape(b, width)
+                    impact[:, start:start + width] = base_err[:, None] - err
+            # A positive number means the single-token repair makes the head output more
+            # trustworthy.  Normalise by the largest positive gain in this frame.  Unlike a
+            # z-score this keeps an entirely clean frame at exactly zero instead of assigning
+            # every healthy token a 0.5 target merely because floating-point noise exists.
+            positive = impact[:, :count].clamp_min(0.0)
+            changed = (corrupted[:, :count] != clean[:, :count]).any(dim=-1)
+            positive = positive.masked_fill(~changed, 0.)
+            scale = positive.amax(dim=1, keepdim=True).clamp_min(1e-12)
+            ratio = (positive / scale).clamp(0.0, 1.0)
+            threshold = min(max(float(min_ratio), 0.0), 0.99)
+            target = ((ratio - threshold) / max(1.0 - threshold, 1e-6)).clamp(0.0, 1.0)
+            target = target.pow(1.0 / max(float(temperature), 1e-3))
+            if count < n:
+                target[:, count:] = 0.0
+        return target.detach().to(dtype=corrupted.dtype)
+
     def reset_sequence(self) -> None:
         """Clear per-sequence recurrent state.  Call at the start of each sequence."""
         if self.codetrack is not None:
@@ -167,6 +258,7 @@ class GOLA_DINOv2(nn.Module):
                 teacher: bool = False,
                 image_corruption_mask: Optional[torch.Tensor] = None,
                 x_clean: Optional[torch.Tensor] = None,
+                training_targets: Optional[dict] = None,
                 **kwargs):
         if self.codetrack is None:
             z_feat_v, z_feat_i = self._z_feat(z, z_feat_mask)
@@ -177,12 +269,14 @@ class GOLA_DINOv2(nn.Module):
         return self._forward_codetrack(z, x, d, z_feat_mask, d_feat_mask,
                                        image_corruption_mask=image_corruption_mask,
                                        x_clean=x_clean,
+                                       training_targets=training_targets,
                                        gt_box=gt_box, image_size=image_size,
                                        teacher=teacher, **kwargs)
 
     def _forward_codetrack(self, z, x, d, z_feat_mask, d_feat_mask,
                            image_corruption_mask=None,
                            x_clean=None,
+                           training_targets=None,
                            gt_box=None, image_size=None, teacher=False, **kwargs):
         """One CodeTrack training/inference step.
 
@@ -369,9 +463,39 @@ class GOLA_DINOv2(nn.Module):
             was_corrupted=(drop_token if drop_token is not None else None),
             image_corruption_mask=image_corruption_mask,
             update_state=True,
+            preserve_state=bool(kwargs.get("preserve_state", False)),
+            search_crop_params=kwargs.get("search_crop_params"),
         )
         with torch.autocast('cuda', enabled=False):
             head_out = self.head(out["X_final"].float())
+            causal_q_target = None
+            causal_q_valid = None
+            if (self.training and needs_teacher and
+                    bool(getattr(self.codetrack_cfg, "causal_q_target_enabled", False))):
+                causal_q_target = self._causal_token_impact_target(
+                    out["tokens"]["X_TIR"].detach(), clean_tokens.detach(),
+                    self.head(out["tokens"]["X_TIR"].float()),
+                    clean_logits,
+                    tracking_targets=training_targets,
+                    max_tokens=int(getattr(self.codetrack_cfg, "causal_q_target_tokens", 256)),
+                    temperature=float(getattr(self.codetrack_cfg, "causal_q_target_temperature", 2.0)),
+                    min_ratio=float(getattr(self.codetrack_cfg, "causal_q_target_min_ratio", 0.25)))
+                # A same-frame clean/corrupt counterfactual exists only when the input
+                # pipeline actually intervened. Natural challenge frames have no clean twin;
+                # treating their stochastic teacher/student difference as a negative label
+                # would train q to suppress exactly the cases it must learn to judge.
+                causal_q_valid = torch.zeros(
+                    causal_q_target.shape[0], device=causal_q_target.device, dtype=torch.bool)
+                if drop_token is not None:
+                    causal_q_valid |= drop_token.reshape(-1).to(
+                        device=causal_q_target.device, dtype=torch.bool)
+                if image_corruption_mask is not None and torch.is_tensor(image_corruption_mask):
+                    image_damaged = (image_corruption_mask.reshape(image_corruption_mask.shape[0], -1)
+                                     .abs().sum(dim=-1) > 0)
+                    causal_q_valid |= image_damaged.to(
+                        device=causal_q_target.device, dtype=torch.bool)
+                causal_q_target = causal_q_target * causal_q_valid.to(
+                    causal_q_target.dtype).unsqueeze(-1)
             # Training-only selective-update target.  A frame is trustworthy for correction when
             # it was not synthetically damaged and the corrected head preserves most of the
             # clean-teacher response.  This teaches the shared reliability gate the actual
@@ -441,6 +565,8 @@ class GOLA_DINOv2(nn.Module):
             # given".  The paper-level criterion is ``d_final < d_input``.
             "input_tokens": out["tokens"]["X_TIR"],
             "q": out["q"], "s": out["s"],
+            "causal_q_target": causal_q_target,
+            "causal_q_valid": causal_q_valid,
             "syndrome_energy_before": out.get("syndrome_energy_before"),
             "syndrome_energy_after": out.get("syndrome_energy_after"),
             # raw pre-sigmoid evidence: the diagnosis loss must be the autocast-safe
@@ -453,6 +579,7 @@ class GOLA_DINOv2(nn.Module):
             "corruption_mask": token_mask,
             "was_corrupted": out.get("was_corrupted"),
             "corruption_fraction": out.get("corruption_fraction"),
+            "q_prior": out.get("q_prior"),
             "frame_reliability": (out.get("memory") or {}).get("frame_reliability"),
             # TRC per-frame confidences (B, F).  Supervised below: the learned gate has NO
             # other gradient path -- it only multiplies the frame summaries, and nothing in
