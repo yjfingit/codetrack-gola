@@ -34,7 +34,7 @@ identify the exact config, checkpoint, and log used.
 | E0025 | Initial-template / motion / temporal-modality reference words | 72 native failures, GT only for target verification | n/a | n/a | available observation/template sources; no fake student token faults | prepared | [record](E0025-native-reference-words.md) |
 | E0026 | One-stage native observed-word reliability + exact syndrome decoding | native hard frames + actual healthy contexts, 7/3 sequence split | pending | pending | all offered references are student-visible; GT selects supervision only | prepared | [record](E0026-native-word-training.md) |
 | E0027 | Conditional error likelihood + joint reference/error erasure | same native export and seed; no threshold sweep | pending | pending | fixes probability semantics before deployment | prepared | [record](E0027-conditional-word-erasure.md) |
-| E0028 | Live native word/Kalman/template rollout | complete held-out native 200-frame sequence | pending | pending | cached IoU gain +.019808; live feedback unproven | prepared | [record](E0028-live-native-word-rollout.md) |
+| E0028 | Live native word/Kalman/template rollout | complete held-out native 200-frame sequence | 92.00 | 62.381 | +37.00 / +27.17 pp vs paired native sequence | one-sequence transfer passes; other native sequences running next | [record](E0028-live-native-word-rollout.md) |
 
 ## Current Read
 

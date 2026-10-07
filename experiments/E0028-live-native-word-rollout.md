@@ -10,6 +10,8 @@
 - E0027 pilot outcome: 44 held-out native cached frames, mean selected-box IoU gain **+.019808**, three improve and none regress. Reliability still falsely authorizes some unrepairable words, so this live test is discovery/validation, not a final deliverable or calibrated-mechanism claim.
 - Sampling/training/checkpoint: no new fitting; `_probe/E0027/train/decoder.safetensors`, seed 42, best update 100. Original frozen GOLA checkpoint is unchanged.
 - Output: live ordered per-frame predictions/correction telemetry and official OPE-style train-sequence PR/SR under `_probe/E0028/`. Final LasHeR-test / RGBT234 remain outstanding.
+- First complete live result at `50f3670`: **PR .92000 / SR .62380952**, paired native GOLA .55000 / .35214287; **+37.00 / +27.17 pp** on this one held-out train sequence. All 200 frames completed, 12 corrected frames, mean four offered words, wall time 28.71s. This is a strong native transfer result on one sequence, not a final test score or proof of global nonregression.
+- Next: the remaining two held-out native sequences, `rightbackcup` and `whitebetweenblackandblue`, in independent ordered processes with unique state/output paths. Inspect refusal/correction telemetry and full paired per-sequence PR/SR before full LasHeR-test promotion.
 
 ```bash
 source scripts/00_env.sh
