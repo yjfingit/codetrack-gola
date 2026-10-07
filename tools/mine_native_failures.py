@@ -131,7 +131,7 @@ def main():
                 for role, samples in (('clip', list(recent)), ('history', history)):
                     for sample_index, sample_record in enumerate(samples):
                         for key, value in sample_record['tensors'].items():
-                            tensors[f'{role}.{sample_index}.{key}'] = value.contiguous()
+                            tensors[f'{role}.{sample_index}.{key}'] = value.contiguous().clone()
                 event_path = args.output / f'seq{sequence_index:02d}_event{len(events):02d}.safetensors'
                 save_file(tensors, str(event_path))
                 events.append({'frame': frame, 'kind': 'tracking_failure' if valid else 'unknown_visibility',

@@ -10,6 +10,9 @@
 - CPU/GPU path: four decode producers, ordered prefetch queue (8), pinned memory, non-blocking transfer, one GPU consumer. First verify the same 128-frame prefix against serial decode with exact predictions and PR/SR; restart at frame 0 for whole-sequence mining.
 - Configuration/source/checkpoint/log: `_probe/E0024/`, frozen `weights/gola_b224.bin`, commit + command below. Event tensors remain outside Git. Full JSON traces and a report prove sequence completion; an in-progress status never counts as completion.
 - PR/SR scope: LasHeR-train target discovery, not LasHeR-test or a final candidate score.
+- First launch (`1c367c8`) stopped at the first event serialization: clip/history views shared tensors, which safetensors refuses to save. No complete sequence report was produced. Preserve `_probe/E0024/native.log`; retry clones independent archive tensors before save.
+- Verified before the stop: the 128-frame `biketurndark` serial/prefetch predictions were exactly identical (maximum pixel difference 0), PR .984375 / SR .71428573 in both paths.
+- Retry scheduling: GPU2 became free in the live query. Two versioned manifests distribute whole sequences by frame count across GPU2/GPU4, with unique outputs and no intra-sequence splitting. Auxiliary whole-image Kalman noise/floor uses full-frame units rather than crop-normalised extent limits; it does not affect baseline predictions.
 
 ```bash
 source scripts/00_env.sh

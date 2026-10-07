@@ -66,7 +66,11 @@ class ObservedGOLATracker:
         self.post = PostProcessing_BoxWithScoreMap(torch.device('cuda'), (16, 16), (224, 224), .45)
         self.post.start()
         self.updater = SimpleTemplateUpdater(.84, 2., (112, 112), 'mm', 'bilinear', False, torch.device('cuda'))
-        self.motion = KalmanMotionPrior().cuda().eval()
+        # This auxiliary filter lives in whole-image coordinates, while the
+        # trainable CodeTrack prior uses search-crop coordinates. Use physical
+        # frame-scale noise and a 0.1% floor instead of the crop's 2% extent floor.
+        self.motion = KalmanMotionPrior(process_noise=1e-4, measurement_noise=4e-4).cuda().eval()
+        self.motion.MIN_SIDE = .001
         self.fused = None
         self.hook = self.model.norm.register_forward_hook(
             lambda _module, _inputs, output: setattr(self, 'fused', output.detach()))
