@@ -40,6 +40,15 @@ assert hit == 1, f"expected 1 LasHeR_PATH line, found {hit}"
 open(path, 'w').write(''.join(out))
 PY
 export TRACKIT_CONSTS_PATH="$RUN_CONSTS"
+if [[ -n "${RECOVERY_SCALE:-}" ]]; then
+  export CODETRACK_RECOVERY_SCALE="$RECOVERY_SCALE"
+fi
+if [[ -n "${ACCEPT_SCORE_DELTA:-}" ]]; then
+  export CODETRACK_ACCEPT_SCORE_DELTA="$ACCEPT_SCORE_DELTA"
+fi
+if [[ "${TOKEN_ACCEPT:-0}" == "1" ]]; then
+  export CODETRACK_TOKEN_ACCEPT=1
+fi
 echo "[view] TRACKIT_CONSTS_PATH=$RUN_CONSTS (LasHeR_PATH -> $VIEW/)"
 echo "[run ] CodeTrack inference on sequence: $SEQ"
 
