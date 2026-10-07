@@ -20,6 +20,7 @@ identify the exact config, checkpoint, and log used.
 | E0011 | Same recipe with strict 7/3 sequence holdout and validation checkpoint selection | 7 train + 3 unseen LasHeR-train clips, length 4, 1 seed | n/a | n/a | held-out q-AUROC 0.876; bad-token recovery +0.00038; tracking-loss gain +0.0625; healthy drift 0.000180 | retain as first promising training recipe; needs split/seed confirmation | [record](E0011-causal-holdout.md) |
 | E0012 | E0011 repeated with seed 43 | same 7/3 holdout, length 4 | n/a | n/a | held-out q-AUROC 0.853; bad-token recovery +0.000372; tracking-loss gain +0.0553; healthy drift 0.000180 | retain; proceed to 10-clip head comparison | [record](E0012-causal-holdout-seed43.md) |
 | E0013 | E0011 final candidate with standalone checkpoint and all-clip probe | 7/3 holdout + all 10 probe clips, seed 42 | n/a | n/a | all-clip q-AUROC 0.747; bad-token recovery +0.000542; tracking-loss gain +0.0458; healthy drift 0.000109 | retain as checkpoint candidate; next run production 10-sequence PR/SR | [record](E0013-final-candidate.md) |
+| E0014 | Production-style 10-sequence evaluation of E0013 candidate | LasHeR-test selected 10, serial, GPU4 | 57.882 | 47.929 | -0.193 / -0.224 pp vs paired GOLA (PR/SR) | reject candidate as final; midredboy and boyunder2baskets are damaging | [record](E0014-candidate-10seq.md) |
 
 ## Current Read
 
