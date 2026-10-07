@@ -35,12 +35,31 @@ class CodeTrackConfig:
     h_links_per_check: int = 12           # d_c  (M*d_c = 768 = N*d_v)
     h_min_col_degree: int = 3             # d_v
     h_locality_window: int = 0            # 0 = unrestricted sampling
+    h_layout: str = "random"              # deterministic grid or seeded random checks
     # share of each check's edges drawn from the global pool instead of its local window.
     # 0 = purely local (a syndrome can only report "something near this check"),
     # 1 = purely random (no addressability).  0.25 was the starting value.
     h_free_edge_frac: float = 0.25
     h_seed: int = 1234
     syndrome_hidden: int = 128
+    # ECC-native decoder. ``legacy`` keeps the original syndrome MLP for ablations;
+    # ``neural_bp`` unfolds a small weighted belief-propagation decoder on H.
+    decoder_type: str = "neural_bp"
+    bp_iterations: int = 3
+    bp_damping: float = 0.5
+    abstain_enabled: bool = False
+    abstain_threshold: float = 0.5
+    # Inference-only reliability controls.  The learned frame gate reuses the template-trust
+    # estimator; the geometric edge margin is a hard out-of-view safety constraint.  Both are
+    # disabled by default so old checkpoints reproduce the original SATR path.
+    decode_gate_enabled: bool = False
+    decode_gate_threshold: float = 0.5
+    edge_reject_margin: float = 0.0
+    # Accept a recovery only when the shared tracking head's peak response does not fall below
+    # the baseline head.  Zero is a conservative selective-propagation rule; negative values are
+    # allowed only for controlled ablations.
+    accept_score_delta: float = 0.0
+    accept_enabled: bool = False
     # Block 3.1 detail: s_j = MLP([delta, |delta|, cos(obs, ref)])
     syndrome_cos: bool = True
     # Location prior on the check support: each check prefers a spatial window.
@@ -69,6 +88,7 @@ class CodeTrackConfig:
     # ``bias = log(motion_map) * motion_bias_scale``.  This is the only knob governing how
     # strongly the motion prior steers evidence routing (0 = motion ignored by the refiner).
     motion_bias_scale: float = 0.5
+    motion_route_scale: float = 0.0
     # Centre and standardise the log-space motion bias before scaling it.  Without this the
     # bias is a near-constant (measured logit spread 0.05 nats over 8 neighbours, because the
     # unit-mass motion map sits at 1/256 +- 2e-3), so the Kalman prior cannot influence
@@ -78,35 +98,17 @@ class CodeTrackConfig:
     # denoiser.  Replaces the old "large negative residual gate" idiom: a small nonzero
     # ``up`` keeps step-0 output near identity while leaving the conditioning paths their
     # gradient.  See codetrack/recovery.py for the measurements behind this.
-    up_init_std: float = 0.02
+    up_init_std: float = 0.005
 
-    # ---- block 5: diffusion / noising-denoising correction ------------------
-    # SCDT-style noising-denoising: weak/strong noise on the *available* features,
-    # a short-term cross-attention denoiser, mean-var completion and 2 refinement
-    # steps.  ``diffusion_steps`` is the number of iterative refinement steps.
-    diffusion_enabled: bool = True
-    diffusion_steps: int = 2
-    diffusion_hidden: int = 256
-    diffusion_heads: int = 4
-    noise_weak_std: float = 0.05
-    noise_strong_std: float = 0.20
-    noise_strong_prob: float = 0.5
-    # cosine noise schedule coefficient: alpha_bar_t = cos(pi/2 * (t/T)^u)
-    noise_schedule_power: float = 1.0
-    # How strongly each step's prediction is written back:
-    #   "ramp"         w_t = (t + 1) / T                -> every step contributes, later ones more
-    #   "linear_noise" w_t = 1 - alpha_bar_t            -> the old behaviour, w_0 == 0
-    #
-    # "linear_noise" is kept as an option because it is what the previous revision used, but it
-    # wastes the first step: with the cosine buffer at T=2 the weights are
-    # ``[1 - cos(0), 1 - cos(pi/2)] = [0.0, 0.999]``, so step 0 computes a prediction (and its
-    # gradients) and then multiplies it by zero.  The module was advertised as "2-step
-    # refinement" while only one step could move a token.  ``ramp`` gives [0.5, 1.0] at T=2.
-    # Identity at initialisation is unaffected either way: the whole prediction is still scaled
-    # by ``sigmoid(residual_gate)``.
-    diffusion_write_schedule: str = "ramp"
-    # keep the input alive: the correction is a gated residual, never a rewrite
-    residual_clip: float = 0.0            # 0 = unbounded
+    # SATR performs three explicit Tanner message rounds and writes one sparse residual.
+    satr_rounds: int = 3
+    # Bound a single decoded residual relative to the received token.  This prevents a sparse
+    # but wrong route from producing a large feature jump; 0 disables the bound for ablations.
+    residual_clip_ratio: float = 0.05
+    # Training-only dense soft route.  Hard Top-K is kept for inference, but using it while
+    # fitting gives q gradients only on the selected tokens and creates a train/eval mismatch.
+    # With this switch every token receives q_i * DeltaX_i; the inference budget is unchanged.
+    soft_route_training: bool = False
 
     # ---- block 6: online template protection --------------------------------
     template_protection: bool = True
@@ -129,11 +131,14 @@ class CodeTrackConfig:
     w_track_corr: float = 1.0
     w_track_clean: float = 0.25
     lambda_diag: float = 0.5
+    lambda_diag_rank: float = 0.0
+    diag_rank_margin: float = 0.2
     lambda_rec: float = 0.2
     # L_gain supervises the *improvement* the recovery must produce, not its similarity to the
     # teacher: ReLU(d_after - 0.8 * d_before).  Without it the recovery branch can be trained
     # towards "output something plausible" instead of "output something better".
     lambda_gain: float = 0.2
+    gain_margin: float = 0.8
     lambda_align: float = 0.2
     lambda_pres: float = 0.01
     lambda_mem: float = 0.1
@@ -141,6 +146,10 @@ class CodeTrackConfig:
     # objective says what a frame's reliability should be (see codetrack/criteria.py).
     lambda_trc: float = 0.1
     lambda_motion: float = 0.2
+    # Penalize a decoded feature whose visual parity residual is larger than its input residual.
+    # Kept at zero for old checkpoints; the next training candidate enables it explicitly.
+    lambda_post_syndrome: float = 0.0
+    post_syndrome_margin: float = 0.9
 
     # ---- temporal training (stage 3+) ---------------------------------------
     # Number of frames a clip spans when the causal-clip sampler is active.
@@ -174,9 +183,26 @@ class CodeTrackConfig:
     # error target, which the per-sequence real labels cannot provide.
     corruption_token_prob: float = 0.06
     corruption_token_ratio: float = 0.4
+    corruption_centered: bool = False
+    # Spatial sampling policy for synthetic token damage. ``quadrant_mix`` samples a
+    # quadrant per selected frame and keeps the block inside that quadrant.
+    corruption_spatial_mode: str = "random"
     corruption_severity: float = 0.4
     diagnosis_alpha: float = 0.5          # e* = a*e_feat + (1-a)*e_task
+    # When enabled during training, compute a causal token-impact target by replacing one
+    # corrupted head token with its clean counterpart.  This is deliberately opt-in because
+    # it adds a small batched head-probe cost; the target is the tracking-relevant signal for q,
+    # while the injector mask remains only a coverage diagnostic.
+    causal_q_target_enabled: bool = False
+    causal_q_target_tokens: int = 256
+    causal_q_target_temperature: float = 2.0
+    causal_q_target_min_ratio: float = 0.25
     detection_prior: float = 0.2          # syndrome sigmoid bias init
+    freeze_vote_bias: bool = False
+    center_bp_logits: bool = False
+    # Optional mean-q anchor.  It prevents the learnable BP vote bias from collapsing to an
+    # all-healthy solution when the diagnosis branch is trained without the GOLA adapters.
+    lambda_q_prior: float = 0.0
     # Initial gain on the raw syndrome logit.  The stock head produces s_raw with a spread of
     # only ~0.2 over 64 checks, so s = sigmoid(s_raw) is a point mass at 0.794 and every
     # consumer of q degenerates (constant q -> random TopK routing, non-selective noise gate,
@@ -186,6 +212,11 @@ class CodeTrackConfig:
     # Calibrate gain and centre once on the first training batch; inference never mutates
     # them, and loading a calibrated checkpoint preserves both values.
     syndrome_gain_calibration: bool = True
+    # Explicit visual parity residual weight.  ``H @ (RGB-TIR)`` is the check
+    # equation: healthy cross-modal observations should agree after projection,
+    # while a damaged modality creates local check energy.  Zero preserves the
+    # legacy decoder for ablations; positive values activate the physical check.
+    explicit_syndrome_weight: float = 0.0
 
     # ---- stage-specific DINOv2 unfreezing (S3) ------------------------------
     # Name prefixes of otherwise-frozen backbone parameters whose gradient is re-enabled.  Empty
@@ -229,3 +260,9 @@ class CodeTrackConfig:
             raise ValueError("num_neighbours exceeds x_len")
         if self.mid_dim <= 0 or self.refiner_hidden <= 0:
             raise ValueError("mid_dim and refiner_hidden must be positive")
+        if self.decoder_type not in {"legacy", "neural_bp"}:
+            raise ValueError("decoder_type must be 'legacy' or 'neural_bp'")
+        if self.bp_iterations < 1:
+            raise ValueError("bp_iterations must be positive")
+        if self.h_layout not in {"random", "grid"}:
+            raise ValueError("h_layout must be 'random' or 'grid'")

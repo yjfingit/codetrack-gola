@@ -150,6 +150,7 @@ def main() -> None:
     cfg["model"]["codetrack"]["memory_enabled"] = False
     cfg["model"]["codetrack"]["template_protection"] = False
     cfg["model"]["codetrack"]["topk_tokens"] = 4
+    cfg["model"]["codetrack"]["soft_route_training"] = True
     cfg["model"]["codetrack"]["abstain_enabled"] = True
     cfg["model"]["codetrack"]["abstain_threshold"] = float(args.abstain_threshold)
     cfg["model"]["codetrack"]["motion_route_scale"] = 0.0
@@ -157,9 +158,9 @@ def main() -> None:
     model.load_state_dict(load_file(str(ROOT / "weights/gola_b224.bin")), strict=False)
     ct = model.codetrack
     H = ct.H.matrix().detach()
-    # Stage 1 uses paired synthetic faults to teach q where a controlled transmission error
-    # occurred. The subsequent clip stage also receives tracking gradients on clean and damaged
-    # frames, so the final detector is not trained only to reproduce an injector mask.
+    # Stage 1 uses the causal tracking-impact target.  The synthetic edit says where pixels were
+    # changed, but not every changed token harms the head; fitting that injector mask was the
+    # main source of the previous train/validation mismatch.
     diag_params = list(ct.diagnosis.parameters())
     for p in model.parameters():
         p.requires_grad_(False)
@@ -179,48 +180,6 @@ def main() -> None:
                 m[:, yy * 16 + xx] = True
         return m
 
-    ct.diagnosis.train()
-    for _ in range(int(args.diag_steps)):
-        losses = []
-        for _name, clean_f, cor_f, boxes, damage in cached:
-            for t in range(args.clip_length):
-                c = ct._split(cor_f[t:t + 1]); k = ct._split(clean_f[t:t + 1])
-                tpl = torch.cat([c["Z_RGB"], c["Z_TIR"], c["Z_on"], c["D_TIR"]], dim=1)
-                ctx = ct.template_pool(tpl.mean(dim=1)).detach()
-                d = ct.diagnosis(c["X_TIR"].detach(), c["X_RGB"].detach(), H, template_context=ctx)
-                clean_tpl = torch.cat([k["Z_RGB"], k["Z_TIR"], k["Z_on"], k["D_TIR"]], dim=1)
-                clean_d = ct.diagnosis(k["X_TIR"].detach(), k["X_RGB"].detach(), H,
-                                       template_context=ct.template_pool(clean_tpl.mean(dim=1)).detach())
-                mask = make_mask(boxes[t], damage[t])
-                l_bce = F.binary_cross_entropy_with_logits(d["q_logits"].float(), mask.float())
-                l_clean = F.binary_cross_entropy_with_logits(
-                    clean_d["q_logits"].float(), torch.zeros_like(clean_d["q_logits"]))
-                if bool(mask.any()):
-                    pos = d["q_logits"][mask].mean()
-                    neg = d["q_logits"][~mask].mean()
-                    l_rank = F.relu(0.5 - pos + neg)
-                else:
-                    l_rank = l_bce.new_zeros(())
-                # Penalize a clean frame whose error posterior consumes the entire route budget.
-                l_budget = F.relu(clean_d["q"].mean() - 0.05)
-                # Match the posterior mass to the known corruption rate. BCE alone can satisfy
-                # ranking by saturating a broad region at q≈1, which makes TopK route healthy
-                # tokens. The mean-mass term calibrates q as a probability rather than a score.
-                l_mass = ((d["q"].mean() - mask.float().mean()).pow(2)
-                          if bool(mask.any()) else l_bce.new_zeros(()))
-                losses.append(l_bce + 0.5 * l_clean + 0.5 * l_rank +
-                              0.25 * l_budget + 2.0 * l_mass)
-        dl = torch.stack(losses).mean()
-        diag_opt.zero_grad(set_to_none=True); dl.backward(); torch.nn.utils.clip_grad_norm_(diag_params, 1.0); diag_opt.step()
-    ct.diagnosis.train()
-    train_params = list(ct.diagnosis.parameters()) + list(ct.satr.parameters())
-    if ct.motion is not None:
-        train_params += list(ct.motion.prior.parameters()) + [ct.motion.uncertainty_gain]
-    for p in train_params:
-        p.requires_grad_(True)
-    opt = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=1e-5)
-    history, best = [], {"score": -float("inf"), "step": -1, "state": None}
-
     def tracking_targets(box_xywh):
         cx, cy, bw, bh = box_xywh
         xyxy = torch.stack([cx - 0.5 * bw, cy - 0.5 * bh,
@@ -235,6 +194,72 @@ def main() -> None:
             "boxes": gt[None],
         }
 
+    causal_by_name = {}
+    with torch.no_grad():
+        for name, clean_f, cor_f, boxes, damage in cached:
+            targets = []
+            for t in range(args.clip_length):
+                clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
+                cor_tok = ct._split(cor_f[t:t + 1])["X_TIR"].detach()
+                clean_head = ct.head(clean_tok.float())
+                cor_head = ct.head(cor_tok.float())
+                targets.append(model._causal_token_impact_target(
+                    cor_tok, clean_tok, cor_head, clean_head,
+                    tracking_targets=tracking_targets(boxes[t]), max_tokens=256,
+                    min_ratio=0.25))
+            causal_by_name[name] = torch.cat(targets, dim=0)
+    causal_stats = {
+        "mean": float(torch.cat(list(causal_by_name.values())).mean()),
+        "positive_fraction": float((torch.cat(list(causal_by_name.values())) > 0).float().mean()),
+        "strong_fraction": float((torch.cat(list(causal_by_name.values())) >= 0.5).float().mean()),
+        "max": float(torch.cat(list(causal_by_name.values())).max()),
+    }
+    print(json.dumps({"causal_target_stats": causal_stats}), flush=True)
+
+    ct.train()
+    for _ in range(int(args.diag_steps)):
+        losses = []
+        for _name, clean_f, cor_f, boxes, damage in cached:
+            for t in range(args.clip_length):
+                c = ct._split(cor_f[t:t + 1]); k = ct._split(clean_f[t:t + 1])
+                tpl = torch.cat([c["Z_RGB"], c["Z_TIR"], c["Z_on"], c["D_TIR"]], dim=1)
+                ctx = ct.template_pool(tpl.mean(dim=1)).detach()
+                d = ct.diagnosis(c["X_TIR"].detach(), c["X_RGB"].detach(), H, template_context=ctx)
+                causal = causal_by_name[_name][t:t + 1].to(d["q_logits"].device)
+                if float(damage[t]) > 0.0:
+                    l_diag = F.binary_cross_entropy_with_logits(
+                        d["q_logits"].float(), causal.float(),
+                        pos_weight=d["q_logits"].new_tensor(8.0))
+                    positive = causal > 0.0
+                    negative = ~positive
+                    if bool(positive.any()) and bool(negative.any()):
+                        l_rank = F.relu(0.25 - d["q_logits"][positive].mean()
+                                         + d["q_logits"][negative].mean())
+                    else:
+                        l_rank = l_diag.new_zeros(())
+                    losses.append(l_diag + 0.25 * l_rank)
+                else:
+                    # These frames are known clean by construction.  This is a safe negative
+                    # example because it is a paired synthetic clean view, not an assumption
+                    # about an arbitrary natural LasHeR frame.
+                    losses.append(F.binary_cross_entropy_with_logits(
+                        d["q_logits"].float(), torch.zeros_like(d["q_logits"])))
+        dl = torch.stack(losses).mean()
+        diag_opt.zero_grad(set_to_none=True); dl.backward(); torch.nn.utils.clip_grad_norm_(diag_params, 1.0); diag_opt.step()
+    ct.train()
+    # Diagnosis has already been fitted to the causal target above.  Keep it frozen while SATR
+    # learns the repair direction; otherwise tracking loss rewards the detector for declaring
+    # every token suspicious, which was the failure mode of the previous joint run.
+    for p in ct.diagnosis.parameters():
+        p.requires_grad_(False)
+    train_params = list(ct.satr.parameters())
+    if ct.motion is not None:
+        train_params += list(ct.motion.prior.parameters()) + [ct.motion.uncertainty_gain]
+    for p in train_params:
+        p.requires_grad_(True)
+    opt = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=1e-5)
+    history, best = [], {"score": -float("inf"), "step": -1, "state": None}
+
     def predicted_observation(head_out):
         score = head_out["score_map"].detach().float().sigmoid().flatten(1)
         best = score.argmax(dim=-1)
@@ -246,7 +271,7 @@ def main() -> None:
                             (x2 - x1).clamp(min=1.0), (y2 - y1).clamp(min=1.0)], dim=-1)
         return confidence, xywh
 
-    def step_clip(clean_f, cor_f, boxes, damage, training=True):
+    def step_clip(name, clean_f, cor_f, boxes, damage, training=True):
         ct.reset_sequence()
         losses, feature_gains, tracking_gains, drifts = [], [], [], []
         for t in range(args.clip_length):
@@ -271,22 +296,28 @@ def main() -> None:
 
             d_in = (1 - F.cosine_similarity(cor_tok, clean_tok, dim=-1)).clamp(0, 2)
             d_out = (1 - F.cosine_similarity(out["X_final"], clean_tok, dim=-1)).clamp(0, 2)
-            healthy = ~mask
-            drift = (out["X_final"][healthy] - cor_tok[healthy]).square().mean()
-            if bool(mask.any()):
-                feature_gain = d_in[mask].mean() - d_out[mask].mean()
-                rec_loss = d_out[mask].mean()
-                q_loss = F.binary_cross_entropy_with_logits(out["q_logits"].float(), mask.float())
+            causal = causal_by_name[name][t:t + 1].to(out["q_logits"].device)
+            # The causal target is continuous.  Values just above zero are weak numerical
+            # gains, not reliable evidence that a token should be rewritten; using a strict
+            # impact threshold keeps the healthy identity set non-empty.
+            bad = causal >= 0.5
+            healthy = ~bad
+            drift = ((out["X_final"][healthy] - cor_tok[healthy]).square().mean()
+                     if bool(healthy.any()) else out["X_final"].sum() * 0.0)
+            if bool(bad.any()):
+                feature_gain = d_in[bad].mean() - d_out[bad].mean()
+                rec_loss = d_out[bad].mean()
+                q_loss = F.binary_cross_entropy_with_logits(
+                    out["q_logits"].float(), causal.float())
             else:
                 feature_gain = d_in.new_zeros(())
                 rec_loss = d_out.new_zeros(())
-                q_loss = F.binary_cross_entropy_with_logits(
-                    out["q_logits"].float(), torch.zeros_like(out["q_logits"]))
+                q_loss = out["q_logits"].sum() * 0.0
             tracking_gain = track_base - track_repaired
             # Real tracking loss decides whether the learned route is useful. The margin term
             # explicitly pushes harmful corrections back toward the identity path.
             loss = (track_repaired + 0.5 * F.relu(track_repaired - track_base.detach())
-                    + 0.2 * rec_loss + 0.1 * drift + 0.1 * q_loss)
+                    + 0.2 * rec_loss + 1.0 * drift + 0.05 * q_loss)
             losses.append(loss)
             feature_gains.append(feature_gain.detach())
             tracking_gains.append(tracking_gain.detach())
@@ -296,8 +327,8 @@ def main() -> None:
                 float(torch.stack(tracking_gains).mean()), float(torch.stack(drifts).mean()))
 
     for step in range(args.steps):
-        rows = [step_clip(clean_f, cor_f, boxes, damage)
-                for _, clean_f, cor_f, boxes, damage in cached]
+        rows = [step_clip(name, clean_f, cor_f, boxes, damage)
+                for name, clean_f, cor_f, boxes, damage in cached]
         loss = torch.stack([r[0] for r in rows]).mean()
         opt.zero_grad(set_to_none=True); loss.backward()
         grad = torch.nn.utils.clip_grad_norm_(train_params, 1.0); opt.step()
@@ -329,6 +360,7 @@ def main() -> None:
 
     @torch.no_grad()
     def evaluate_learned():
+        ct.eval()
         values = []
         q_values = []
         active_values = []
@@ -365,6 +397,7 @@ def main() -> None:
               "clip_length": args.clip_length, "sequences": [x[0] for x in cached],
               "best_step": best["step"], "best_score": best["score"],
               "learned_eval": learned_eval,
+              "causal_target_stats": causal_stats,
               "history": history, "checkpoint": str(args.save_checkpoint)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

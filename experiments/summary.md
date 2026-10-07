@@ -16,6 +16,7 @@ identify the exact config, checkpoint, and log used.
 | E0007 | E0005, full LasHeR-test | 245 sequences | n/a | n/a | interrupted at 238/245; no result archive | invalid/incomplete | [record](E0007-full-scale-half.md) |
 | E0008 | E0005, full LasHeR-test retry | 245 sequences | pending | pending | GPU4 retry; pending | pending | [record](E0008-full-scale-half-retry.md) |
 | E0009 | Legacy continuous-clip SATR probes | 10 LasHeR-train clips, length 4 | n/a | n/a | feature diagnostics only; oracle q used for SATR training | not evidence of learned correction timing | [record](E0009-legacy-clip-probes.md) |
+| E0010 | Causal clip recipe: soft training route, frozen q during SATR, residual trust-region clip | 10 LasHeR-train clips, length 4, 1 seed | n/a | n/a | learned-route feature gain -0.0000013; healthy drift 0.000115 | diagnostic pass for stability, not a tracking result; no full evaluation | [record](E0010-causal-soft-trust.md) |
 
 ## Current Read
 
