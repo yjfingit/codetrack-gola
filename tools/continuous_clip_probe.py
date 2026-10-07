@@ -433,6 +433,7 @@ def main() -> None:
 
     learned_eval = evaluate_learned(val_cached)
     train_eval = evaluate_learned(train_cached)
+    all_eval = evaluate_learned(cached)
     report = {"probe": "continuous_clip_v1", "seed": args.seed,
               "clip_length": args.clip_length, "sequences": [x[0] for x in cached],
               "train_sequences": [x[0] for x in train_cached],
@@ -440,6 +441,7 @@ def main() -> None:
               "best_step": best["step"], "best_score": best["score"],
               "learned_eval": learned_eval,
               "train_eval": train_eval,
+              "all_eval": all_eval,
               "causal_target_stats": causal_stats,
               "history": history, "checkpoint": str(args.save_checkpoint)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
