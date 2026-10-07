@@ -13,7 +13,7 @@ Latest objective is the 2026-10-07 attachment ending `85990379...`: real image/n
 
 ## Live work to revalidate first
 
-E0028 full native `rightbackcup` and `whitebetweenblackandblue` were launched at source `e58c3ab`, private per-sequence state/output, GPU2/GPU4. Tool sessions 76057 / 1522; observed Python PIDs 3665766 / 3665764. Inspect actual process handles, logs and terminal reports before deciding to wait/restart; do not infer liveness from this note.
+E0028 full native `rightbackcup` and `whitebetweenblackandblue` were launched at source `e58c3ab`, private per-sequence state/output, GPU2/GPU4. `whitebetweenblackandblue` is now terminal: 928 complete frames, PR .63577586 / SR .54135883 versus paired GOLA .47844827 / .42025861 (+15.73 / +12.11 pp). `rightbackcup` was revalidated live at PID 3665766, tool session 76057; do not restart it based on an observation timeout. Inspect actual process/log/report before deciding to wait/restart; do not infer liveness from this note.
 
 - `_probe/E0028/cup.log`, `_probe/E0028/cup/report.json`
 - `_probe/E0028/whitebetween.log`, `_probe/E0028/whitebetween/report.json`

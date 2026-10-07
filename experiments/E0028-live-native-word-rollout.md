@@ -12,6 +12,7 @@
 - Output: live ordered per-frame predictions/correction telemetry and official OPE-style train-sequence PR/SR under `_probe/E0028/`. Final LasHeR-test / RGBT234 remain outstanding.
 - First complete live result at `50f3670`: **PR .92000 / SR .62380952**, paired native GOLA .55000 / .35214287; **+37.00 / +27.17 pp** on this one held-out train sequence. All 200 frames completed, 12 corrected frames, mean four offered words, wall time 28.71s. This is a strong native transfer result on one sequence, not a final test score or proof of global nonregression.
 - Next: the remaining two held-out native sequences, `rightbackcup` and `whitebetweenblackandblue`, in independent ordered processes with unique state/output paths. Inspect refusal/correction telemetry and full paired per-sequence PR/SR before full LasHeR-test promotion.
+- Extended validation: `whitebetweenblackandblue` completes **928/928** ordered frames, PR **.63577586** / SR **.54135883** versus paired native GOLA **.47844827 / .42025861**, gains **+15.73 / +12.11 pp**. Wall time 434.09s. `rightbackcup` remains a live ordered job; its longer full-sequence score is not available yet.
 
 ```bash
 source scripts/00_env.sh
