@@ -32,6 +32,7 @@ identify the exact config, checkpoint, and log used.
 | E0023 | Physical-image fault formation, qualified clean repair reference and matched student conditions | train10; 7/3 sequence split; held-out impairment families + native observations | n/a | n/a | held-out q AUC .926 but bad-token recovery 0; native tracking loss worsens .000569 | reject recipe; preserve condition controls | [record](E0023-physical-observation-training.md) |
 | E0024 | Native hard-frame/history mining and target discovery | 10 complete native train sequences; 26,119 frames | 66.413 | 52.214 | train research reference; 72 natural failure contexts | complete; target discovery next | [record](E0024-native-target-mining.md) |
 | E0025 | Initial-template / motion / temporal-modality reference words | 72 native failures, GT only for target verification | n/a | n/a | available observation/template sources; no fake student token faults | prepared | [record](E0025-native-reference-words.md) |
+| E0026 | One-stage native observed-word reliability + exact syndrome decoding | native hard frames + actual healthy contexts, 7/3 sequence split | pending | pending | all offered references are student-visible; GT selects supervision only | prepared | [record](E0026-native-word-training.md) |
 
 ## Current Read
 

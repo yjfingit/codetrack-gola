@@ -18,6 +18,8 @@ def main():
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--mode', choices=('template', 'temporal'), default='template')
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--export-words', action='store_true', help='save all offered words, not a GT-picked input')
+    ap.add_argument('--include-controls', action='store_true', help='add actual healthy context frames with past-only banks')
     args = ap.parse_args()
 
     import numpy as np
@@ -40,6 +42,44 @@ def main():
     paths = sorted(p for folder in args.events for p in folder.glob('*.event.json'))
     if args.limit:
         paths = paths[:args.limit]
+    if args.include_controls:
+        control_folder = args.output / 'control_events'
+        control_folder.mkdir(exist_ok=True)
+        controls = []
+        for original_path in paths:
+            original = json.loads(original_path.read_text())
+            good_indices = [i for i, r in enumerate(original['clip']) if r['gt_valid'] and r['iou'] >= .5]
+            if not good_indices:
+                continue
+            chosen_indices = sorted(set((good_indices[0], good_indices[-1])))
+            original_pack = load_file(original['tensors'])
+            sources = {r['frame']: (f'history.{i}.', r) for i, r in enumerate(original['history'])}
+            sources.update({r['frame']: (f'clip.{i}.', r) for i, r in enumerate(original['clip'])})
+            for control_index in chosen_indices:
+                current = original['clip'][control_index]
+                available = [r for _, r in sources.values() if r['frame'] < current['frame']
+                             and r['frame'] > 0 and r['confidence'] > .84]
+                history = [original['history'][0]] + sorted(available, key=lambda r: r['frame'])[-3:]
+                if any(r['frame'] >= current['frame'] for r in history):
+                    raise RuntimeError('control history contains a future/current observation')
+                tensors = {}
+                for role, samples in (('clip', [current]), ('history', history)):
+                    for sample_index, sample in enumerate(samples):
+                        source_prefix = sources[sample['frame']][0]
+                        for key, value in original_pack.items():
+                            if key.startswith(source_prefix):
+                                tensors[f'{role}.{sample_index}.{key[len(source_prefix):]}'] = value.contiguous().clone()
+                stem = f'control{len(controls):03d}'
+                tensor_path = control_folder / (stem + '.safetensors')
+                save_file(tensors, str(tensor_path))
+                control = {**original, 'frame': current['frame'], 'kind': 'healthy_native_context',
+                           'clip': [current], 'history': history, 'tensors': str(tensor_path),
+                           'native_trace': str(original_path.parent / (original_path.name.split('_event')[0] + '_trace.json'))}
+                control_path = control_folder / (stem + '.event.json')
+                control_path.write_text(json.dumps(control, indent=2) + '\n')
+                controls.append(control_path)
+        paths += controls
+        print(json.dumps({'native_hard_frames': len(paths) - len(controls), 'native_healthy_controls': len(controls)}), flush=True)
     results = []
     file_lists = {}
     traces = {}
@@ -70,7 +110,8 @@ def main():
         dm = pack[prefix + 'd_mask'].cuda().long()
         received = pack[prefix + 'F_L'].cuda().float()
         params = np.asarray(row['crop_params'])
-        trace_path = path.parent / (path.name.split('_event')[0] + '_trace.json')
+        trace_path = (Path(event['native_trace']) if 'native_trace' in event else
+                      path.parent / (path.name.split('_event')[0] + '_trace.json'))
         if trace_path not in traces:
             traces[trace_path] = {r['frame']: r for r in json.loads(trace_path.read_text())}
         previous = (traces[trace_path][row['frame'] - 1]['bbox'] if row['frame'] > 1
@@ -144,12 +185,43 @@ def main():
                         word, _ = encode(hybrid.clone(), z, online, zm, mask)
                         candidates.append((f'history{history_index}_{modality}_{suffix}', word, params))
         comparisons, best_word, best_name, best_stats = [], None, None, None
+        candidate_tokens, candidate_bits, candidate_statistics = [], [], []
+        def point_losses(head):
+            loss = F.binary_cross_entropy_with_logits(head['score_map'].float(),
+                                                      target['score_quality_map'], reduction='none').flatten(1)
+            indices = target['positive_sample_map_dim_indices']
+            if indices.numel():
+                predicted = head['boxes'].reshape(1, 256, 4)[0, indices]
+                truth_boxes = target['boxes'].expand(len(pos), -1)
+                loss[0, indices] += giou_loss(predicted, truth_boxes)
+            return loss / max(1, len(pos))
+        numerical_floor = max(1e-6, 8. * torch.finfo(torch.float32).eps * (1. + abs(baseline['loss'])))
         for name, word, coordinate_params in candidates:
-            stats, _, _ = evaluate_word(word, coordinate_params)
+            stats, word_tokens, word_head = evaluate_word(word, coordinate_params)
             reliable = row['gt_valid'] and stats['iou'] >= .5 and stats['iou'] >= baseline['iou'] + .02
             stats.update({'name': name, 'reliable_tracking_target': bool(reliable),
                           'same_crop': bool(np.array_equal(coordinate_params, params))})
             comparisons.append(stats)
+            if args.export_words and stats['same_crop']:
+                useful = reliable and stats['loss'] < baseline['loss'] - 1e-4
+                gains = point_losses(base_head) - point_losses(word_head)
+                candidate_tokens.append(word_tokens[0].cpu())
+                candidate_bits.append(((gains[0] > numerical_floor) & useful).cpu())
+                # Statistics use observed head outputs and past motion only. Never GT IoU.
+                bb = np.asarray(stats['bbox']); current_box = np.asarray(baseline['bbox'])
+                mp = np.asarray(row['motion_prediction_xywh'])
+                prior_centre = mp[:2] + mp[2:] * .5
+                centre = (bb[:2] + bb[2:]) * .5
+                wh = np.maximum(bb[2:] - bb[:2], 1.)
+                prior_wh = np.maximum(mp[2:], 1.)
+                current_centre = (current_box[:2] + current_box[2:]) * .5
+                candidate_statistics.append([
+                    stats['confidence'], baseline['confidence'],
+                    *((centre - prior_centre) / prior_wh).tolist(),
+                    *np.log(wh / prior_wh).tolist(),
+                    *((centre - current_centre) / prior_wh).tolist(),
+                    float(row['motion_uncertainty']), float('RGB' in name),
+                    float('initial' in name), float(name.startswith('initial_template'))])
             if reliable and stats['same_crop'] and stats['loss'] < baseline['loss'] - 1e-4:
                 if best_stats is None or stats['loss'] < best_stats['loss']:
                     best_word, best_name, best_stats = word, name, stats
@@ -169,15 +241,6 @@ def main():
             # The GOLA head is pointwise. Fixed quality labels make the exact
             # task loss additive across tokens, so compute every signed repair
             # gain without frame-relative max normalisation or batch-kernel noise.
-            def point_losses(head):
-                loss = F.binary_cross_entropy_with_logits(head['score_map'].float(),
-                                                          target['score_quality_map'], reduction='none').flatten(1)
-                indices = target['positive_sample_map_dim_indices']
-                if indices.numel():
-                    predicted = head['boxes'].reshape(1, 256, 4)[0, indices]
-                    truth_boxes = target['boxes'].expand(len(pos), -1)
-                    loss[0, indices] += giou_loss(predicted, truth_boxes)
-                return loss / max(1, len(pos))
             gains = point_losses(base_head) - point_losses(reference_head)
             if abs(float(gains.sum()) - (baseline['loss'] - best_stats['loss'])) > 1e-3:
                 raise RuntimeError('pointwise native loss decomposition disagrees with full tracking loss')
@@ -192,9 +255,32 @@ def main():
             save_file({'received': received.cpu(), 'reference': best_word.float().cpu(),
                        'causal_labels': labels.cpu(), 'signed_tracking_gain': gains.cpu(),
                        'positive_gain_bits': positive_bits.cpu()}, str(args.output / f'target{event_index:03d}.safetensors'))
+        if args.export_words:
+            initial_fused = pack['history.0.F_L'].float()
+            foreground = pack['history.0.z_mask'].reshape(-1).bool()
+            identity = (initial_fused[0, :64][foreground].mean(0) +
+                        initial_fused[0, 320:384][foreground].mean(0)) * .5
+            mp = np.asarray(row['motion_prediction_xywh'])
+            centre = apply_siamfc_cropping_to_boxes(
+                np.array([mp[0], mp[1], mp[0]+mp[2], mp[1]+mp[3]]), params)
+            motion = np.array([*(centre[:2]+centre[2:])*.5/224.,
+                               *(centre[2:]-centre[:2])/224., row['motion_uncertainty']])
+            frame_path = args.output / f'words{event_index:03d}.safetensors'
+            labels = [float(c['reliable_tracking_target'] and c['loss'] is not None
+                            and c['loss'] < baseline['loss'] - 1e-4)
+                      for c in comparisons if c['same_crop']]
+            save_file({'current_ir': base_tok[0].cpu(), 'current_rgb': received[0, 64:320].cpu(),
+                       'words': torch.stack(candidate_tokens).float(), 'identity': identity,
+                       'motion': torch.tensor(motion, dtype=torch.float32),
+                       'word_statistics': torch.tensor(candidate_statistics, dtype=torch.float32),
+                       'word_labels': torch.tensor(labels), 'bit_labels': torch.stack(candidate_bits),
+                       'gt_box': target['boxes'][0].cpu(),
+                       'gt_positive_indices': target['positive_sample_map_dim_indices'].cpu()}, str(frame_path))
         record = {'event': str(path), 'sequence': event['sequence'], 'frame': row['frame'],
                   'baseline': baseline, 'reencode_max_feature_difference': difference,
                   'candidates': comparisons, 'oracle_recovery': oracle}
+        if args.export_words:
+            record['offered_words'] = str(frame_path)
         results.append(record)
         print(json.dumps({'sequence': event['sequence'], 'frame': row['frame'],
                           'baseline_iou': baseline['iou'], 'best_candidate_iou': max(c['iou'] for c in comparisons),
