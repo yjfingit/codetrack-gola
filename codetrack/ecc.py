@@ -71,7 +71,16 @@ def build_sparse_support(num_checks: int, num_variables: int,
     grid = int(grid)
     spatial = grid * grid == num_variables
 
-    if spatial and locality_window > 0 and layout == "grid":
+    if layout == "binary_cycles":
+        if not spatial or num_checks != num_variables or links_per_check != 4:
+            raise ValueError("binary_cycles requires one four-variable check per grid cell")
+        for y in range(grid):
+            for x in range(grid):
+                corners = [y * grid + x, y * grid + (x + 1) % grid,
+                           ((y + 1) % grid) * grid + x,
+                           ((y + 1) % grid) * grid + (x + 1) % grid]
+                support[y * grid + x, corners] = 1.
+    elif spatial and locality_window > 0 and layout == "grid":
         side = int(round(num_checks ** 0.5))
         if side * side != num_checks or grid % side != 0:
             raise ValueError("grid layout requires square checks dividing token grid")

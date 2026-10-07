@@ -24,9 +24,10 @@ identify the exact config, checkpoint, and log used.
 | E0015 | Frame-level baseline-protected write-back, isolated parallel evaluation | LasHeR-test selected 10, GPU4, NPROC=2 | 57.926 | 47.964 | -0.149 / -0.189 pp vs paired GOLA (PR/SR) | reject as final; slight improvement but still below baseline | [record](E0015-baseline-protected.md) |
 | E0016 | CPU prefetch: 8 eval workers + 4 I/O threads | `bike2left` serial correctness check, GPU4 | 94.55 | 81.34 | exact metric match to serial; single-sequence wall time 22.99s | retain as optional full-eval setting; single short sequence is slower due startup overhead | [record](E0016-cpu-prefetch.md) |
 | E0017 | Correct moving-crop Kalman geometry and observation timing | 4 physical/state witnesses; structural 97/97 | n/a | n/a | state correctness only | opt-in replay path; production integration still required | [record](E0017-causal-motion-coordinates.md) |
-| E0018 | Causal predicted-crop replay versus GT-centred control | train10, 7/3 sequence holdout, mid-video clips, seed 42 | pending | pending | no closed-loop score claimed | prepared | [record](E0018-causal-replay.md) |
+| E0018 | Causal predicted-crop replay versus GT-centred control | train10, 7/3 sequence holdout, mid-video clips, seed 42 | n/a | n/a | causal q-AUC .624 vs oracle-crop .760; both selected-box IoU gains negative | reject legacy recipe; no scale-up | [record](E0018-causal-replay.md) |
 | E0019 | No-op-safe causal labels | exactly matched 20 real clip trajectories | n/a | n/a | strong label density 24.92% -> 1.64% | old mechanism diagnostics need remeasurement | [record](E0019-causal-label-audit.md) |
 | E0020 | Noisy GF(2) error-syndrome sum-product decoder | five exact-posterior/causality/gradient witnesses | n/a | n/a | decoder primitive, not tracking result | pass mathematics; visual likelihood integration pending | [record](E0020-exact-syndrome-decoder.md) |
+| E0021 | Visual parity likelihood + exact syndrome BP + motion evidence | same train10 causal crops, 7/3 sequence holdout, seed 42 | pending | pending | channel/learned/shuffled/oracle syndrome comparison | prepared | [record](E0021-visual-syndrome.md) |
 
 ## Current Read
 

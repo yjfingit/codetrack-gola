@@ -34,6 +34,7 @@ def main() -> None:
     ap.add_argument("--sequence-manifest", type=Path, default=ROOT / "experiments/train10.txt")
     ap.add_argument("--crop-policy", choices=("baseline", "gt_centered"), default="baseline")
     ap.add_argument("--clips-per-sequence", type=int, default=2)
+    ap.add_argument("--decoder-type", choices=("neural_bp", "syndrome_bp"), default="neural_bp")
     args = ap.parse_args()
     if args.clip_length < 4 or args.clips_per_sequence < 1:
         ap.error("use clip-length >= 4 and clips-per-sequence >= 1")
@@ -71,6 +72,11 @@ def main() -> None:
     cfg["model"]["codetrack"]["abstain_enabled"] = True
     cfg["model"]["codetrack"]["abstain_threshold"] = float(args.abstain_threshold)
     cfg["model"]["codetrack"]["motion_route_scale"] = 0.0
+    if args.decoder_type == "syndrome_bp":
+        cfg["model"]["codetrack"].update(
+            decoder_type="syndrome_bp", h_layout="binary_cycles", num_checks=256,
+            h_links_per_check=4, h_min_col_degree=4, h_free_edge_frac=0.,
+            detection_prior=.05, bp_iterations=3, bp_damping=0.)
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().float().eval()
     model.load_state_dict(load_file(str(ROOT / "weights/gola_b224.bin")), strict=False)
     ct = model.codetrack
@@ -79,6 +85,8 @@ def main() -> None:
     # changed, but not every changed token harms the head; fitting that injector mask was the
     # main source of the previous train/validation mismatch.
     diag_params = list(ct.diagnosis.parameters())
+    if args.decoder_type == "syndrome_bp":
+        diag_params += list(ct.motion.prior.parameters()) + [ct.motion.uncertainty_gain]
     for p in model.parameters():
         p.requires_grad_(False)
     for p in diag_params:
@@ -155,12 +163,36 @@ def main() -> None:
     for _ in range(int(args.diag_steps)):
         losses = []
         for _name, clean_f, cor_f, boxes, damage, crop_params in train_cached:
+            if args.decoder_type == "syndrome_bp":
+                ct.reset_sequence()
             for t in range(args.clip_length):
                 c = ct._split(cor_f[t:t + 1]); k = ct._split(clean_f[t:t + 1])
                 tpl = torch.cat([c["Z_RGB"], c["Z_TIR"], c["Z_on"], c["D_TIR"]], dim=1)
                 ctx = ct.template_pool(tpl.mean(dim=1)).detach()
-                d = ct.diagnosis(c["X_TIR"].detach(), c["X_RGB"].detach(), H, template_context=ctx)
+                if args.decoder_type == "syndrome_bp":
+                    d = ct(F_L=cor_f[t:t + 1], image_size=cor_f.new_tensor([[224., 224.]]),
+                           search_crop_params=crop_params[t:t + 1], observe_motion=False,
+                           preserve_state=(t > 0), eval_observe=True)
+                    decoded = post(ct.head(c["X_TIR"]))
+                    corners = decoded["box"]
+                    obs = torch.cat([(corners[:, :2] + corners[:, 2:]) * .5,
+                                     (corners[:, 2:] - corners[:, :2]).clamp_min(.001)], -1)
+                    ct.notify_tracking_score(decoded["confidence"], box_xywh=obs)
+                else:
+                    d = ct.diagnosis(c["X_TIR"].detach(), c["X_RGB"].detach(), H, template_context=ctx)
                 causal = causal_by_name[_name][t:t + 1].to(d["q_logits"].device)
+                if args.decoder_type == "syndrome_bp":
+                    bits = (causal >= .5).float()
+                    known = (causal == 0.) | (causal >= .5)
+                    parity_bits = torch.einsum("mn,bn->bm", (H > 0).float(), bits).remainder(2.)
+                    check_known = torch.einsum("mn,bn->bm", (H > 0).float(), (~known).float()) == 0.
+                    unary = F.binary_cross_entropy_with_logits(d["channel_logits"], bits, reduction="none")
+                    posterior = F.binary_cross_entropy_with_logits(d["q_logits"], bits, reduction="none")
+                    parity = F.binary_cross_entropy_with_logits(d["parity_logits"], parity_bits, reduction="none")
+                    loss = ((unary + posterior)[known].mean() +
+                            (parity[check_known].mean() if bool(check_known.any()) else parity.sum() * 0.))
+                    losses.append(loss)
+                    continue
                 if float(damage[t]) > 0.0:
                     l_diag = F.binary_cross_entropy_with_logits(
                         d["q_logits"].float(), causal.float(),
@@ -181,6 +213,8 @@ def main() -> None:
                         d["q_logits"].float(), torch.zeros_like(d["q_logits"])))
         dl = torch.stack(losses).mean()
         diag_opt.zero_grad(set_to_none=True); dl.backward(); torch.nn.utils.clip_grad_norm_(diag_params, 1.0); diag_opt.step()
+        if args.decoder_type == "syndrome_bp" and _ % 25 == 0:
+            print(json.dumps({"diagnosis_step": _, "detection_loss": float(dl.detach())}), flush=True)
     ct.train()
     # Diagnosis has already been fitted to the causal target above.  Keep it frozen while SATR
     # learns the repair direction; otherwise tracking loss rewards the detector for declaring
@@ -188,8 +222,12 @@ def main() -> None:
     for p in ct.diagnosis.parameters():
         p.requires_grad_(False)
     train_params = list(ct.satr.parameters())
-    if ct.motion is not None:
+    if ct.motion is not None and args.decoder_type != "syndrome_bp":
         train_params += list(ct.motion.prior.parameters()) + [ct.motion.uncertainty_gain]
+    elif ct.motion is not None:
+        for p in ct.motion.prior.parameters():
+            p.requires_grad_(False)
+        ct.motion.uncertainty_gain.requires_grad_(False)
     for p in train_params:
         p.requires_grad_(True)
     opt = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=1e-5)
@@ -278,6 +316,7 @@ def main() -> None:
         ct.eval()
         values, q_values, active_values, track_values = [], [], [], []
         auc_scores, auc_labels = [], []
+        channel_scores, parity_scores, parity_labels, oracle_scores, shuffled_scores = [], [], [], [], []
         per_clip, natural_tracks, synthetic_tracks, iou_values = [], [], [], []
         for _name, clean_f, cor_f, boxes, damage, crop_params in items:
             ct.reset_sequence()
@@ -329,9 +368,33 @@ def main() -> None:
                 drifts.append(float(drift.detach()))
                 auc_scores.append(out["q"].detach().flatten())
                 auc_labels.append((causal >= 0.5).flatten())
+                if out.get("channel_logits") is not None:
+                    from codetrack.syndrome_bp import decode_error_syndrome
+                    support = H > 0
+                    bits = (causal >= .5).float()
+                    parity_bits = torch.einsum("mn,bn->bm", support.float(), bits).remainder(2.)
+                    channel_scores.append(out["channel_logits"].sigmoid().flatten())
+                    parity_scores.append(out["parity_logits"].sigmoid().flatten())
+                    parity_labels.append(parity_bits.bool().flatten())
+                    oracle_scores.append(decode_error_syndrome(
+                        out["channel_logits"], support, (2. * parity_bits - 1.) * 12.)["q"].flatten())
+                    shuffled_scores.append(decode_error_syndrome(
+                        out["channel_logits"], support, out["parity_logits"].roll(17, -1))["q"].flatten())
             values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
             per_clip.append({"clip": _name, "tracking_gain": sum(local_tracks) / len(local_tracks),
                              "selected_box_iou_gain": sum(local_ious) / len(local_ious)})
+        mechanism = {}
+        if channel_scores:
+            truth = torch.cat(auc_labels).float()
+            mechanism = {
+                "channel_auc": rank_auc(torch.cat(channel_scores), truth),
+                "oracle_syndrome_auc": rank_auc(torch.cat(oracle_scores), truth),
+                "shuffled_syndrome_auc": rank_auc(torch.cat(shuffled_scores), truth),
+                "parity_auc": rank_auc(torch.cat(parity_scores), torch.cat(parity_labels)),
+                "q_brier": float((torch.cat(auc_scores) - truth).square().mean()),
+                "channel_brier": float((torch.cat(channel_scores) - truth).square().mean()),
+                "parity_brier": float((torch.cat(parity_scores) - torch.cat(parity_labels).float()).square().mean()),
+                "constant_parity_brier": float((torch.cat(parity_labels).float() - torch.cat(parity_labels).float().mean()).square().mean())}
         return {"gain": sum(x[0] for x in values) / len(values),
                 "healthy_drift": sum(x[1] for x in values) / len(values),
                 "q_mean": sum(q_values) / len(q_values),
@@ -341,7 +404,7 @@ def main() -> None:
                 "natural_tracking_gain": sum(natural_tracks) / max(1, len(natural_tracks)),
                 "synthetic_tracking_gain": sum(synthetic_tracks) / max(1, len(synthetic_tracks)),
                 "selected_box_iou_gain": sum(iou_values) / max(1, len(iou_values)),
-                "per_clip": per_clip}
+                "per_clip": per_clip, "syndrome_mechanism": mechanism}
 
     for step in range(args.steps):
         rows = [step_clip(*item) for item in train_cached]

@@ -46,6 +46,7 @@ from .ecc import ParityCheckMatrix, SyndromeDiagnosis, NeuralBPSyndromeDiagnosis
 from .motion import KalmanMotionPrior, TemporalMemory
 from .recovery import SATRRecovery
 from .template import TemplateProtectionGate
+from .syndrome_bp import VisualSyndromeDiagnosis
 
 
 def _merge_corruption_flags(token_flag: Optional[torch.Tensor],
@@ -85,8 +86,9 @@ class CodeTrack(nn.Module):
             locality_window=cfg.h_locality_window, locality_wrap=cfg.h_locality_wrap,
             free_edge_frac=cfg.h_free_edge_frac, seed=cfg.h_seed,
             layout=cfg.h_layout)
-        diagnosis_cls = (NeuralBPSyndromeDiagnosis
-                         if cfg.decoder_type == "neural_bp" else SyndromeDiagnosis)
+        diagnosis_cls = {"neural_bp": NeuralBPSyndromeDiagnosis,
+                         "legacy": SyndromeDiagnosis,
+                         "syndrome_bp": VisualSyndromeDiagnosis}[cfg.decoder_type]
         diagnosis_kwargs = dict(
             dim=cfg.dim, mid_dim=cfg.mid_dim, num_checks=cfg.num_checks,
             num_variables=cfg.x_len, syndrome_hidden=cfg.syndrome_hidden,
@@ -398,7 +400,11 @@ class CodeTrack(nn.Module):
 
         # ---- block 3: ECC diagnosis ------------------------------------------
         H_bar = self.H.matrix()
-        diag = self.diagnosis(X_t, X_aux, H_bar, template_context=template_ctx)
+        evidence_kwargs = {}
+        if getattr(self.diagnosis, "uses_motion_evidence", False):
+            evidence_kwargs = {"motion_map": motion_map, "uncertainty": uncertainty}
+        diag = self.diagnosis(X_t, X_aux, H_bar, template_context=template_ctx,
+                              **evidence_kwargs)
         out_s = diag["s"]
         q = diag["q"]
         if route_q_override is not None:
@@ -761,6 +767,8 @@ class CodeTrack(nn.Module):
             "X_rec": X_rec,
             "q": q, "s": diag["s"], "s_logits": diag["s_logits"], "q_logits": diag["q_logits"],
             "q_prior": q.new_tensor(float(self.cfg.detection_prior)),
+            "channel_logits": diag.get("channel_logits"),
+            "parity_logits": diag.get("parity_logits"),
             "syndrome_pending_calibration": diag.get("syndrome_pending_calibration"),
             "C_obs": diag["C_obs"], "C_ref": diag["C_ref"],
             "syndrome_energy_before": check_before,

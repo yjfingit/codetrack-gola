@@ -268,9 +268,9 @@ class CodeTrackConfig:
             raise ValueError("num_neighbours exceeds x_len")
         if self.mid_dim <= 0 or self.refiner_hidden <= 0:
             raise ValueError("mid_dim and refiner_hidden must be positive")
-        if self.decoder_type not in {"legacy", "neural_bp"}:
-            raise ValueError("decoder_type must be 'legacy' or 'neural_bp'")
+        if self.decoder_type not in {"legacy", "neural_bp", "syndrome_bp"}:
+            raise ValueError("decoder_type must be legacy, neural_bp or syndrome_bp")
         if self.bp_iterations < 1:
             raise ValueError("bp_iterations must be positive")
-        if self.h_layout not in {"random", "grid"}:
-            raise ValueError("h_layout must be 'random' or 'grid'")
+        if self.h_layout not in {"random", "grid", "binary_cycles"}:
+            raise ValueError("h_layout must be random, grid or binary_cycles")

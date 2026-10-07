@@ -9,6 +9,7 @@ message. This file supplies the exact decoder, not the visual likelihood model.
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 
 def decode_error_syndrome(error_logits: torch.Tensor, support: torch.Tensor,
@@ -52,3 +53,61 @@ def decode_error_syndrome(error_logits: torch.Tensor, support: torch.Tensor,
     posterior_logits = -(channel_llr + c2v.sum(dim=1))
     return {'q': posterior_logits.sigmoid(), 'q_logits': posterior_logits,
             'check_to_variable_llr': c2v, 'variable_to_check_llr': v2c}
+
+
+class VisualSyndromeDiagnosis(nn.Module):
+    """Learn distinct channel and parity likelihoods for harmful-token errors.
+
+    The channel sees received TIR, target identity and causal motion. A local check
+    sees ordered RGB/TIR discrepancies at its four variables. Supervision must
+    include the XOR of causal error labels; q loss alone cannot identify a syndrome.
+    The overlapping visual likelihoods form an approximate factor model, whose
+    calibration and held-out gain over the unary channel must be measured.
+    """
+    uses_motion_evidence = True
+
+    def __init__(self, dim=768, mid_dim=128, num_checks=256, num_variables=256,
+                 syndrome_hidden=128, detection_prior=.05, bp_iterations=3,
+                 bp_damping=.0, **_):
+        super().__init__()
+        self.bp_iterations, self.bp_damping = bp_iterations, bp_damping
+        self.W_x = nn.Linear(dim, mid_dim)
+        self.W_r = nn.Linear(dim, mid_dim)
+        self.template_ctx = nn.Linear(dim, mid_dim)
+        self.channel = nn.Sequential(nn.Linear(2 * mid_dim + 2, syndrome_hidden),
+                                     nn.GELU(), nn.Linear(syndrome_hidden, 1))
+        self.parity = nn.Sequential(nn.Linear(4 * 2 * mid_dim, syndrome_hidden),
+                                    nn.GELU(), nn.Linear(syndrome_hidden, 1))
+        self.vote_bias = nn.Parameter(torch.tensor([float(torch.logit(torch.tensor(detection_prior)))]))
+        nn.init.zeros_(self.channel[-1].weight); nn.init.zeros_(self.channel[-1].bias)
+        nn.init.zeros_(self.parity[-1].weight); nn.init.zeros_(self.parity[-1].bias)
+
+    def forward(self, X_t, X_aux, H_bar, template_context=None,
+                motion_map=None, uncertainty=None, return_checks=False):
+        b, n, _ = X_t.shape
+        support = H_bar > 0
+        if not bool((support.sum(-1) == 4).all()):
+            raise ValueError('visual syndrome likelihood requires four-variable checks')
+        idx = support.nonzero(as_tuple=False)[:, 1].reshape(support.shape[0], 4)
+        U, R = self.W_x(X_t), self.W_r(X_aux)
+        template = self.template_ctx(template_context)[:, None, :] if template_context is not None else torch.zeros_like(U[:, :1])
+        motion = U.new_zeros(b, n, 1)
+        if motion_map is not None:
+            logp = motion_map.reshape(b, n).clamp_min(1e-8).log()
+            motion = (logp - logp.mean(-1, keepdim=True)).unsqueeze(-1)
+        unc = U.new_zeros(b, n, 1) if uncertainty is None else uncertainty.reshape(b, 1, 1).expand(-1, n, -1)
+        channel_logits = self.channel(torch.cat([U, U - template, motion, unc], -1)).squeeze(-1) + self.vote_bias
+        residual = U - R
+        evidence = torch.cat([residual, residual.abs()], -1)
+        parity_logits = self.parity(evidence[:, idx].flatten(2)).squeeze(-1)
+        decoded = decode_error_syndrome(channel_logits, support, parity_logits,
+                                        self.bp_iterations, self.bp_damping)
+        out = {**decoded, 'channel_logits': channel_logits, 'parity_logits': parity_logits,
+               'symbol_logits': channel_logits - self.vote_bias,
+               's': parity_logits.sigmoid(), 's_logits': parity_logits,
+               'C_obs': torch.einsum('mn,bnd->bmd', H_bar, U),
+               'C_ref': torch.einsum('mn,bnd->bmd', H_bar, R), 'U': U, 'R': R,
+               'bp_messages': decoded['check_to_variable_llr']}
+        if return_checks:
+            out['H_bar'] = H_bar
+        return out
