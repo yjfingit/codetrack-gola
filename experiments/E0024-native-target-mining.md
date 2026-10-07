@@ -13,6 +13,9 @@
 - First launch (`1c367c8`) stopped at the first event serialization: clip/history views shared tensors, which safetensors refuses to save. No complete sequence report was produced. Preserve `_probe/E0024/native.log`; retry clones independent archive tensors before save.
 - Verified before the stop: the 128-frame `biketurndark` serial/prefetch predictions were exactly identical (maximum pixel difference 0), PR .984375 / SR .71428573 in both paths.
 - Retry scheduling: GPU2 became free in the live query. Two versioned manifests distribute whole sequences by frame count across GPU2/GPU4, with unique outputs and no intra-sequence splitting. Auxiliary whole-image Kalman noise/floor uses full-frame units rather than crop-normalised extent limits; it does not affect baseline predictions.
+- Completed retry at `17ac08f`: both reports are terminal, all 10 distinct sequences complete, **26,119 frames**, **72 native failure contexts**. Part0 has 13,004 frames / 11 events, part1 13,115 frames / 61 events. Among event endpoints the annotated target is fully in the search crop for 55, partly in it for 8, and absent for 9; a repair target cannot simply assume every crop still contains the target.
+- Both shard prefetch witnesses pass exact 128-frame box equality with maximum difference zero and matching PR/SR. The full-sequence macro reference over the ten native train sequences is PR **66.413%**, SR **52.214%**; this is a training research baseline, not the official LasHeR-test score.
+- Outputs: `_probe/E0024/native_part{0,1}/report.json`, complete per-frame traces, atomic event provenance and frozen normal-backbone tensors. E0025 tests whether inference-available template/history/motion reference words provide an actual useful repair direction.
 
 ```bash
 source scripts/00_env.sh

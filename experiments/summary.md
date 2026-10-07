@@ -30,7 +30,8 @@ identify the exact config, checkpoint, and log used.
 | E0021 | Visual parity likelihood + exact syndrome BP + motion evidence | same train10 causal crops, 7/3 sequence holdout, seed 42 | n/a | n/a | q AUC .916 vs unary .907 / shuffled .900; probability calibration and selected-box gates fail | retain verified decoder; reject recipe for scale-up | [record](E0021-visual-syndrome.md) |
 | E0022 | Detached clean-reference tracking quality target | worse-box loss counterexample + gradient witness | n/a | n/a | old loss rewards worse IoU; fixed target removes this escape | pass objective witness; image-level training comparison next | [record](E0022-fixed-tracking-quality.md) |
 | E0023 | Physical-image fault formation, qualified clean repair reference and matched student conditions | train10; 7/3 sequence split; held-out impairment families + native observations | n/a | n/a | held-out q AUC .926 but bad-token recovery 0; native tracking loss worsens .000569 | reject recipe; preserve condition controls | [record](E0023-physical-observation-training.md) |
-| E0024 | Native hard-frame/history mining and target discovery | full ordered LasHeR-train10 | pending | pending | ordinary images/backbone; no augmentation | prepared | [record](E0024-native-target-mining.md) |
+| E0024 | Native hard-frame/history mining and target discovery | 10 complete native train sequences; 26,119 frames | 66.413 | 52.214 | train research reference; 72 natural failure contexts | complete; target discovery next | [record](E0024-native-target-mining.md) |
+| E0025 | Initial-template / motion / temporal-modality reference words | 72 native failures, GT only for target verification | n/a | n/a | available observation/template sources; no fake student token faults | prepared | [record](E0025-native-reference-words.md) |
 
 ## Current Read
 
