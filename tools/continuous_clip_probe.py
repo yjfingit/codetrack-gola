@@ -278,6 +278,19 @@ def main() -> None:
                             (x2 - x1).clamp(min=1.0), (y2 - y1).clamp(min=1.0)], dim=-1)
         return confidence, xywh
 
+    def rank_auc(scores, labels):
+        labels = labels.to(torch.bool).reshape(-1)
+        scores = scores.reshape(-1).float()
+        if not bool(labels.any()) or not bool((~labels).any()):
+            return None
+        order = torch.argsort(scores)
+        ranks = torch.empty_like(scores)
+        ranks[order] = torch.arange(1, scores.numel() + 1, device=scores.device,
+                                    dtype=scores.dtype)
+        pos = labels.sum().to(scores.dtype)
+        neg = (~labels).sum().to(scores.dtype)
+        return float(((ranks[labels].sum() - pos * (pos + 1) / 2) / (pos * neg)).detach())
+
     def step_clip(name, clean_f, cor_f, boxes, damage, training=True):
         ct.reset_sequence()
         losses, feature_gains, tracking_gains, drifts = [], [], [], []
@@ -337,6 +350,7 @@ def main() -> None:
     def evaluate_learned(items):
         ct.eval()
         values, q_values, active_values, track_values = [], [], [], []
+        auc_scores, auc_labels = [], []
         for _name, clean_f, cor_f, boxes, damage in items:
             ct.reset_sequence()
             gains, drifts = [], []
@@ -361,14 +375,23 @@ def main() -> None:
                 active_values.append(float((out["q"] >= args.abstain_threshold).float().mean()))
                 d_in = (1 - F.cosine_similarity(cor_tok, clean_tok, dim=-1)).clamp(0, 2)
                 d_out = (1 - F.cosine_similarity(out["X_final"], clean_tok, dim=-1)).clamp(0, 2)
-                gains.append(float((d_in.mean() - d_out.mean()).detach()))
-                drifts.append(float((out["X_final"] - cor_tok).square().mean().detach()))
+                causal = causal_by_name[_name][t:t + 1].to(out["q"].device)
+                bad = causal >= 0.5
+                healthy = ~bad
+                if bool(bad.any()):
+                    gains.append(float((d_in[bad].mean() - d_out[bad].mean()).detach()))
+                else:
+                    gains.append(0.0)
+                drifts.append(float((out["X_final"][healthy] - cor_tok[healthy]).square().mean().detach()))
+                auc_scores.append(out["q"].detach().flatten())
+                auc_labels.append((causal >= 0.5).flatten())
             values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
         return {"gain": sum(x[0] for x in values) / len(values),
                 "healthy_drift": sum(x[1] for x in values) / len(values),
                 "q_mean": sum(q_values) / len(q_values),
                 "active_fraction": sum(active_values) / len(active_values),
-                "tracking_gain": sum(track_values) / len(track_values)}
+                "tracking_gain": sum(track_values) / len(track_values),
+                "q_auc": rank_auc(torch.cat(auc_scores), torch.cat(auc_labels))}
 
     for step in range(args.steps):
         rows = [step_clip(name, clean_f, cor_f, boxes, damage)
