@@ -33,6 +33,7 @@ def build_replay_cache(args):
         PostProcessing_BoxWithScoreMap)
     from tools.preflight_acceptance import load_stage_config
     from codetrack.observation_faults import TRAIN_FAULTS, HELDOUT_FAULTS, degrade_observation
+    from trackit.miscellanies.image.io import read_image_with_auto_retry
 
     root = Path(__file__).resolve().parents[1]
     dataset = Path(args.dataset)
@@ -52,8 +53,7 @@ def build_replay_cache(args):
     def read(files, frame):
         parts = []
         for fs in files:
-            with Image.open(fs[frame]) as im:
-                parts.append(np.array(im.convert('RGB'), copy=True))
+            parts.append(read_image_with_auto_retry(str(fs[frame])))
         return torch.from_numpy(np.concatenate(parts, axis=-1)).permute(2, 0, 1).float().cuda()
 
     def crop(image, size, params, mean=None):

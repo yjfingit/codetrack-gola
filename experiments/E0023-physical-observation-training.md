@@ -1,7 +1,7 @@
 # E0023: Physical observation faults, trustworthy repair targets and matched student conditions
 
 - Date: 2026-10-07.
-- Status: prepared; no PR/SR result.
+- Status: completed at `57f81f5`; rejected for scale-up. No PR/SR result.
 - Hypothesis: the earlier detector/recovery gaps partly arise from unrealistic image blackout, clean-controlled crop/template history, unreliable teacher targets and different training/inference routes. A physically formed student stream, qualified repair reference and the exact deployment route should teach useful correction that transfers to unseen impairments and natural observations. The result decides whether this training paradigm deserves closed-loop validation or needs a different repair target.
 - Source commit: captured before execution in `_probe/E0023/source_commit.txt`.
 - Data: versioned train10, seven training and three entirely held-out LasHeR-train sequences; two contiguous 4-frame middle-video windows per sequence, seed 42. Twenty main clips plus six native held-out clips. No LasHeR-test tuning.
@@ -43,6 +43,16 @@ Report actual backbone feature deviations, qualified-label coverage, q AUROC/Bri
 Require held-out correction and selected-box gains, bounded preservation, useful calibrated syndrome evidence and nonnegative native tracking transfer before live candidate closed-loop validation. Neither a green unit test nor an augmentation-only gain is a final result.
 
 Outputs: `_probe/E0023/physical.{json,log,safetensors,trajectory.json}`, native trajectory/evaluation, and `observation_examples/*.png`. Checkpoints/raw output stay outside Git.
+
+## Results and decision
+
+- Real image formation: mean backbone feature deviations are .02380 lowlight, .03034 motion blur, .04163 thermal contrast/noise, .03179 occlusion, .02267 misregistration. Occlusion and misregistration reduce teacher/student selected IoU by .06866/.06497. Thermal contrast/noise instead raises mean selected IoU .01286: changed features alone are not harmful-token labels.
+- Qualified reference coverage: 96.15%; strong causal label density 2.06%. No-op label density remains zero. 0.53% positive labels on frames with no *new* impairment reflect corrupted historical online templates, not mask labels.
+- Best repair checkpoint: step 99, `_probe/E0023/physical.safetensors` (diagnostic only).
+- Held-out-family q-AUROC .92580 versus channel .92763, shuffled syndrome .91452 and oracle .94732. q Brier .02799 versus channel .02949. Check Brier .01512 fails the constant-prevalence reference .00901.
+- Training repair: direction cosine +.280, feature gain +.000544, selected-box IoU gain +.001474. Held-out-family repair: feature gain **0**, no written supervised bad tokens, selected-box IoU gain **0**. High ranking AUROC does not establish useful routing or a transferable repair direction.
+- Native observations: tracking-loss gain **-.0005692**, selected-box IoU gain **0**, trusted-token drift 5.14e-6; actual writes cover .163% of tokens. No native-fault q AUROC is claimed because there is no clean native counterpart.
+- Decision: reject this training recipe. The useful construction/condition controls stay, but do not scale the image augmentation recipe or tune its q threshold. E0024 mines actual native failure frames and asks whether available past/cross-modal information can supply a verifiable repair target.
 
 ```bash
 source scripts/00_env.sh
