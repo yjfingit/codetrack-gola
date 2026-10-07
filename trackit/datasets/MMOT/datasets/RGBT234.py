@@ -21,8 +21,14 @@ class RGBT234_Seed(BaseSeed):
         )
 
     def construct(self, constructor: MultiModalObjectTrackingDatasetConstructor):
-        # Implement the dataset construction logic here
-        with open('{}list.txt'.format(self.root_path)) as f:
+        # Official releases place the manifest and sequences under RGB_T234/.
+        root = self.root_path
+        if os.path.isdir(os.path.join(root, 'RGB_T234')):
+            root = os.path.join(root, 'RGB_T234')
+        manifest = os.path.join(root, 'list.txt')
+        if not os.path.exists(manifest):
+            manifest = os.path.join(root, 'rgbt234.txt')
+        with open(manifest) as f:
             sequence_names = f.read().splitlines()
 
         # Set the total number of sequences (Optional, for progress bar)
@@ -35,7 +41,7 @@ class RGBT234_Seed(BaseSeed):
             with constructor.new_sequence() as sequence_constructor:
                 sequence_constructor.set_name(sequence_name)
 
-                sequence_path = os.path.join(self.root_path, sequence_name)
+                sequence_path = os.path.join(root, sequence_name)
                 # groundtruth.txt: the path of the bounding boxes file
                 boxes_path = os.path.join(sequence_path, 'init.txt')
                 frames_path_v = os.path.join(sequence_path, 'visible')
@@ -44,8 +50,10 @@ class RGBT234_Seed(BaseSeed):
                 # load bounding boxes using numpy
                 boxes = np.loadtxt(boxes_path, delimiter=',')
 
-                frame_ids_v = sorted(os.listdir(frames_path_v))
-                frame_ids_i = sorted(os.listdir(frames_path_i))
+                frame_ids_v = sorted(os.listdir(frames_path_v),
+                                      key=lambda x: int(''.join(c for c in x if c.isdigit()) or 0))
+                frame_ids_i = sorted(os.listdir(frames_path_i),
+                                      key=lambda x: int(''.join(c for c in x if c.isdigit()) or 0))
 
                 for frame_id_v, frame_id_i, box in zip(frame_ids_v, frame_ids_i, boxes):
                     # frame_path: the path of the frame image,

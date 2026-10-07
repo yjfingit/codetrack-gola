@@ -36,7 +36,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from trackit.criteria import CriterionOutput
-from trackit.criteria.modules.iou_loss import bbox_overlaps
+from trackit.criteria.modules.iou_loss import bbox_overlaps, giou_loss
 
 
 def _logit(p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -45,12 +45,8 @@ def _logit(p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return torch.log(p) - torch.log1p(-p)
 
 
-def _xywh_to_xyxy(box: torch.Tensor) -> torch.Tensor:
-    cx, cy, w, h = box.unbind(-1)
-    return torch.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], dim=-1)
-
-
-def _tracking_loss(outputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]
+def _tracking_loss(outputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor],
+                   per_sample: bool = False
                    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Replicates the upstream ``box_with_score_map`` objective.
 
@@ -83,25 +79,23 @@ def _tracking_loss(outputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Te
         gt_map = torch.zeros((n, h * w), dtype=torch.float32, device=score_map.device)
         if has_pos:
             gt_map.index_put_((pos_b, pos_m), bbox_overlaps(sel_gt, sel_boxes, is_aligned=True))
+    if per_sample:
+        pos_count = score_map.new_zeros(n)
+        if has_pos:
+            pos_count.index_add_(0, pos_b, torch.ones_like(pos_b, dtype=score_map.dtype))
+        denom = pos_count.clamp_min(1.0)
+        cls_each = F.binary_cross_entropy_with_logits(
+            score_map.reshape(n, -1), gt_map, reduction="none").sum(dim=-1) / denom
+        reg_each = pred_flat.reshape(n, -1, 4).sum(dim=(1, 2)) * 0.0
+        if has_pos and sel_boxes.numel() > 0:
+            reg_each.index_add_(0, pos_b, giou_loss(sel_boxes, sel_gt))
+            reg_each = reg_each / denom
+        return cls_each + reg_each, cls_each, reg_each
     cls = F.binary_cross_entropy_with_logits(
         score_map.reshape(n, -1), gt_map, reduction="sum") / num_pos
 
     if has_pos and sel_boxes.numel() > 0:
-        # GIoU between xyxy boxes
-        a, b = _xywh_to_xyxy(sel_boxes), _xywh_to_xyxy(sel_gt)
-        inter_x1 = torch.max(a[:, 0], b[:, 0]); inter_y1 = torch.max(a[:, 1], b[:, 1])
-        inter_x2 = torch.min(a[:, 2], b[:, 2]); inter_y2 = torch.min(a[:, 3], b[:, 3])
-        iw = (inter_x2 - inter_x1).clamp(min=0); ih = (inter_y2 - inter_y1).clamp(min=0)
-        inter = iw * ih
-        area_a = (a[:, 2] - a[:, 0]).clamp(min=0) * (a[:, 3] - a[:, 1]).clamp(min=0)
-        area_b = (b[:, 2] - b[:, 0]).clamp(min=0) * (b[:, 3] - b[:, 1]).clamp(min=0)
-        union = (area_a + area_b - inter).clamp(min=1e-6)
-        iou = inter / union
-        cx1 = torch.min(a[:, 0], b[:, 0]); cy1 = torch.min(a[:, 1], b[:, 1])
-        cx2 = torch.max(a[:, 2], b[:, 2]); cy2 = torch.max(a[:, 3], b[:, 3])
-        carea = (cx2 - cx1).clamp(min=0) * (cy2 - cy1).clamp(min=0)
-        giou = iou - (carea - union) / carea.clamp(min=1e-6)
-        reg = (1.0 - giou).sum() / num_pos
+        reg = giou_loss(sel_boxes, sel_gt).sum() / num_pos
     else:
         reg = pred_flat.mean() * 0.0
     return cls + reg, cls, reg
@@ -259,10 +253,14 @@ class CodeTrackCriteria(nn.Module):
 
     def __init__(self, w_track_corr: float = 1.0, w_track_clean: float = 0.25,
                  lambda_diag: float = 0.5, lambda_rec: float = 0.2,
+                 lambda_diag_rank: float = 0.0, diag_rank_margin: float = 0.2,
+                 lambda_causal_rank: float = 0.0, causal_rank_margin: float = 0.2,
                  lambda_gain: float = 0.2,
                  lambda_align: float = 0.2, lambda_pres: float = 0.01,
                  lambda_mem: float = 0.1, lambda_gate: float = 0.1,
                  lambda_motion: float = 0.2, lambda_trc: float = 0.1,
+                 lambda_q_prior: float = 0.0,
+                 lambda_post_syndrome: float = 0.0, post_syndrome_margin: float = 0.9,
                  diagnosis_alpha: float = 0.5,
                  gain_margin: float = 0.8,
                  cls_name: str = "cls", reg_name: str = "box"):
@@ -270,6 +268,10 @@ class CodeTrackCriteria(nn.Module):
         self.w_track_corr = float(w_track_corr)
         self.w_track_clean = float(w_track_clean)
         self.lambda_diag = float(lambda_diag)
+        self.lambda_diag_rank = float(lambda_diag_rank)
+        self.diag_rank_margin = float(diag_rank_margin)
+        self.lambda_causal_rank = float(lambda_causal_rank)
+        self.causal_rank_margin = float(causal_rank_margin)
         self.lambda_rec = float(lambda_rec)
         self.lambda_gain = float(lambda_gain)
         # ``d_after`` must beat ``gain_margin * d_before``; 0.8 means "reduce the distance to the
@@ -280,6 +282,9 @@ class CodeTrackCriteria(nn.Module):
         self.lambda_mem = float(lambda_mem)
         self.lambda_gate = float(lambda_gate)
         self.lambda_motion = float(lambda_motion)
+        self.lambda_q_prior = float(lambda_q_prior)
+        self.lambda_post_syndrome = float(lambda_post_syndrome)
+        self.post_syndrome_margin = float(post_syndrome_margin)
         self.lambda_trc = float(lambda_trc)
         self.alpha = float(diagnosis_alpha)
         self.cls_name = cls_name
@@ -314,6 +319,21 @@ class CodeTrackCriteria(nn.Module):
         if extras is None:
             return CriterionOutput(total, metrics)
 
+        # Keep the BP vote prior identifiable even on clean frames where no corruption
+        # target is available.  Otherwise the learnable vote bias can reduce every q to
+        # nearly zero while still satisfying the sparse corruption batches.
+        q_all = extras.get("q")
+        # Older wrappers/checkpoints may omit the scalar export; the configured BP prior is
+        # 0.2 for all current CodeTrack recipes, so keep the anchor active in that case too.
+        q_prior_all = extras.get("q_prior")
+        if q_prior_all is None:
+            q_prior_all = q_all.new_tensor(0.2) if q_all is not None else None
+        if q_all is not None and q_prior_all is not None and self.lambda_q_prior > 0:
+            prior = q_prior_all.reshape(-1).to(device=q_all.device, dtype=q_all.dtype).mean()
+            l_q_prior = (q_all.mean() - prior).pow(2)
+            total = total + self.lambda_q_prior * l_q_prior
+            metrics["Loss/q_prior"] = float(l_q_prior.detach())
+
         # ---- clean branch tracking loss -------------------------------------
         teacher = extras.get("teacher")
         if teacher is not None and "score_map" in teacher:
@@ -326,19 +346,73 @@ class CodeTrackCriteria(nn.Module):
         # ---- diagnosis ------------------------------------------------------
         q = extras.get("q")
         err = extras.get("error_target")
-        if q is not None and err is not None:
+        causal_target = extras.get("causal_q_target")
+        if q is not None and (err is not None or causal_target is not None):
             # ``*_with_logits`` is mandatory under AMP: plain ``binary_cross_entropy`` on the
             # sigmoid output raises "unsafe to autocast" mid-run (observed on the first real
             # training step, which is exactly the kind of failure a preflight exists to catch).
             q_logits = extras.get("q_logits")
-            if q_logits is not None:
-                l_diag = F.binary_cross_entropy_with_logits(q_logits.float(), err.float())
+            # Synthetic corruption supplies an exact token-level transmission error code.
+            # Use it as the primary detector target; the continuous feature discrepancy is
+            # retained as a soft auxiliary target below.  Mixing them as one BCE target made
+            # q learn severity while the router needed support recovery, and caused q to
+            # collapse below the configured prior during the first S1 run.
+            cor_mask_diag = extras.get("corruption_mask")
+            # The causal intervention target is the primary signal when present.  It says
+            # whether repairing this token improves the head, whereas corruption_mask only
+            # says whether the injector edited an input patch.
+            if causal_target is not None:
+                diag_target = causal_target.to(q.dtype)
+            elif cor_mask_diag is not None and bool(cor_mask_diag.any()):
+                diag_target = cor_mask_diag.to(err.dtype)
             else:
-                l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), err)
+                diag_target = err
+            causal_valid = extras.get("causal_q_valid")
+            if causal_target is not None and causal_valid is not None:
+                valid = causal_valid.to(device=q.device, dtype=torch.bool).reshape(-1)
+                if q_logits is not None:
+                    per_token = F.binary_cross_entropy_with_logits(
+                        q_logits.float(), diag_target.float(), reduction="none")
+                else:
+                    per_token = F.binary_cross_entropy(
+                        q.clamp(1e-6, 1 - 1e-6), diag_target, reduction="none")
+                l_diag = ((per_token * valid[:, None].to(per_token.dtype)).sum()
+                          / (valid.sum() * q.shape[-1]).clamp_min(1))
+            elif q_logits is not None:
+                l_diag = F.binary_cross_entropy_with_logits(q_logits.float(), diag_target.float())
+            else:
+                l_diag = F.binary_cross_entropy(q.clamp(1e-6, 1 - 1e-6), diag_target)
+            if causal_target is not None and q_logits is not None and self.lambda_causal_rank > 0:
+                # Causal targets are sparse: most frames have no token whose replacement
+                # improves the frozen tracking head. A per-frame ranking term gives the few
+                # positive interventions a direct gradient without promoting the injector mask.
+                rank_losses = []
+                rank_gaps = []
+                valid_rows = (causal_valid.to(device=q.device, dtype=torch.bool).reshape(-1)
+                              if causal_valid is not None else
+                              torch.ones(q.shape[0], device=q.device, dtype=torch.bool))
+                for logits_i, target_i, valid_i in zip(
+                        q_logits.float(), causal_target.detach().float(), valid_rows):
+                    if not bool(valid_i):
+                        continue
+                    positive = target_i > 0.0
+                    negative = ~positive
+                    if bool(positive.any()) and bool(negative.any()):
+                        gap = logits_i[positive].mean() - logits_i[negative].mean()
+                        rank_gaps.append(gap)
+                        rank_losses.append(F.relu(self.causal_rank_margin - gap))
+                if rank_losses:
+                    l_causal_rank = torch.stack(rank_losses).mean()
+                    total = total + self.lambda_causal_rank * l_causal_rank
+                    metrics["Loss/causal_rank"] = float(l_causal_rank.detach())
+                    metrics["Error/q_causal_logit_gap"] = float(
+                        torch.stack(rank_gaps).mean().detach())
             s = extras.get("s")
             s_target = extras.get("syndrome_target")
-            if s is not None and s_target is not None:
-                l_diag = l_diag + 0.5 * F.smooth_l1_loss(s.float(), s_target.float())
+            if causal_target is None and s is not None and s_target is not None:
+                # Keep the measured feature syndrome as a gentle consistency term rather
+                # than allowing it to reverse the signed damage convention.
+                l_diag = l_diag + 0.25 * F.smooth_l1_loss(s.float(), s_target.float())
             total = total + self.lambda_diag * l_diag
             metrics["Loss/diag"] = float(l_diag.detach())
             # Reporting only: is the head's ranking of "which token is damaged" better than
@@ -347,8 +421,16 @@ class CodeTrackCriteria(nn.Module):
             #
             # PRIMARY metric: rank q against the injector's exact token label.  No threshold is
             # involved, so it is a direct answer to "can the diagnosis find the damaged tokens".
-            cor_mask_diag = extras.get("corruption_mask")
             if cor_mask_diag is not None:
+                pos_rank = cor_mask_diag.to(torch.bool)
+                neg_rank = ~pos_rank
+                if q_logits is not None and bool(pos_rank.any()) and bool(neg_rank.any()):
+                    logits_rank = q_logits.float()
+                    logit_gap = logits_rank[pos_rank].mean() - logits_rank[neg_rank].mean()
+                    l_diag_rank = F.relu(self.diag_rank_margin - logit_gap)
+                    total = total + self.lambda_diag_rank * l_diag_rank
+                    metrics["Loss/diag_rank"] = float(l_diag_rank.detach())
+                    metrics["Error/q_logit_gap"] = float(logit_gap.detach())
                 auroc_mask = _auroc_against_mask(q.detach(), cor_mask_diag)
                 if auroc_mask is not None:
                     metrics["Error/q_auroc_mask"] = auroc_mask
@@ -364,6 +446,20 @@ class CodeTrackCriteria(nn.Module):
                 if bool(posd.any()) and bool((~posd).any()):
                     metrics["Error/q_pos_mean"] = float(qd[posd].mean().detach())
                     metrics["Error/q_neg_mean"] = float(qd[~posd].mean().detach())
+            if causal_target is not None:
+                valid_rows = (causal_valid.to(device=q.device, dtype=torch.bool).reshape(-1)
+                              if causal_valid is not None else
+                              torch.ones(q.shape[0], device=q.device, dtype=torch.bool))
+                if bool(valid_rows.any()):
+                    q_valid = q.detach().float()[valid_rows]
+                    y_valid = causal_target.detach().float()[valid_rows]
+                    qd, yd = q_valid.reshape(-1), y_valid.reshape(-1)
+                    metrics["Error/q_causal_target_mean"] = float(yd.mean())
+                    metrics["Error/q_causal_corr"] = float(
+                        torch.corrcoef(torch.stack([qd, yd]))[0, 1].nan_to_num().detach())
+                    causal_auc = _auroc_against_mask(q_valid, y_valid > 0.0)
+                    if causal_auc is not None:
+                        metrics["Error/q_auroc_causal"] = causal_auc
             # SECONDARY metric: the same ranking against the *soft* target.  Threshold-dependent
             # by construction (see ``_auroc_against_mask``); never use it alone for a decision.
             auroc_soft = _rank_auroc(q.detach().float(), err.detach().float(), thr=0.25)
@@ -375,6 +471,21 @@ class CodeTrackCriteria(nn.Module):
             metrics["Error/q_mean"] = float(q.detach().mean())
 
         # ---- recovery -------------------------------------------------------
+        syn_before = extras.get("syndrome_energy_before")
+        syn_after = extras.get("syndrome_energy_after")
+        if syn_before is not None and syn_after is not None:
+            # On corrupted frames the decoder should reduce parity residual. On clean frames the
+            # same term protects the identity path by making any increase costly. The margin is
+            # multiplicative so it remains meaningful across sequences and feature scales.
+            syn_gap = F.relu(syn_after - self.post_syndrome_margin * syn_before)
+            l_post = syn_gap.mean()
+            if self.lambda_post_syndrome > 0:
+                total = total + self.lambda_post_syndrome * l_post
+            metrics["Loss/post_syndrome"] = float(l_post.detach())
+            metrics["Error/syndrome_before"] = float(syn_before.detach().mean())
+            metrics["Error/syndrome_after"] = float(syn_after.detach().mean())
+            metrics["Error/syndrome_gain"] = float((syn_before - syn_after).detach().mean())
+
         rec = extras.get("recovered")
         clean_tok = extras.get("clean_tokens")
         if rec is not None and clean_tok is not None:
@@ -417,7 +528,7 @@ class CodeTrackCriteria(nn.Module):
         # all-clean batch (the majority of every batch) there is no corruption mask and the term
         # simply does not exist -- mixing ~86% untouched samples into the average would hide the
         # very signal it exists to expose.
-        x_rec = extras.get("recovered_pre_denoise")
+        x_rec = extras.get("recovered_satr")
         x_in = extras.get("input_tokens")
         cor_mask = extras.get("corruption_mask")
         if x_rec is not None and x_in is not None and clean_tok is not None \
@@ -437,7 +548,7 @@ class CodeTrackCriteria(nn.Module):
             # ``L_gain`` would carry no gradient into the refiner/denoiser at all and the term
             # would be decorative.
             d_before_map = self._relative_error(x_rec, clean_tok)
-            d_after_map = self._relative_error(rec, clean_tok)
+            d_after_map = d_before_map
             d_input = d_input_map[cor].mean()
             d_before = d_before_map[cor].mean()
             d_after = d_after_map[cor].mean()
@@ -449,22 +560,16 @@ class CodeTrackCriteria(nn.Module):
             # which has no anchor to the input, made things worse.  Both ``d_input`` and
             # ``d_before`` are detached -- otherwise the model could lower this loss by making its
             # own input worse instead of making the output better.
-            l_gain_refiner = F.relu(d_before - self.gain_margin * d_input)
-            l_gain_final = F.relu(d_after - self.gain_margin * d_input)
-            l_gain = l_gain_refiner + l_gain_final
+            l_gain = F.relu(d_after - self.gain_margin * d_input)
             if self.lambda_gain > 0:
                 total = total + self.lambda_gain * l_gain
             metrics["Loss/gain"] = float(l_gain.detach())
-            metrics["Loss/gain_refiner"] = float(l_gain_refiner.detach())
-            metrics["Loss/gain_final"] = float(l_gain_final.detach())
             # reporting only -- these are the preflight acceptance numbers
             metrics["Error/d_input"] = float(d_input.detach())
             metrics["Error/d_before"] = float(d_before.detach())
             metrics["Error/d_after"] = float(d_after.detach())
             # The paper-level criterion, and the two sub-stages that compose it.
             metrics["Error/gain_total"] = float((d_input - d_after).detach())
-            metrics["Error/gain_refiner"] = float((d_input - d_before).detach())
-            metrics["Error/gain_denoiser"] = float((d_before - d_after).detach())
             metrics["Error/corrupted_fraction"] = float(cor.to(torch.float32).mean())
             # The task-relevant form of the same question: does the branch shrink the error at
             # all?  Reported for the tokens that were damaged AND flagged as suspect.
@@ -480,16 +585,6 @@ class CodeTrackCriteria(nn.Module):
                     metrics["Error/d_after_suspect"] = float(d_after_map[sel].mean().detach())
                     metrics["Error/gain_suspect"] = float(
                         (d_input_map[sel] - d_after_map[sel]).mean().detach())
-
-        # ---- alignment (mean / var completion) ------------------------------
-        mv = extras.get("meanvar")
-        if mv is not None and clean_tok is not None:
-            tgt_mean = clean_tok.mean(dim=1)
-            tgt_logvar = clean_tok.var(dim=1, unbiased=False).clamp(min=1e-6).log()
-            l_align = F.mse_loss(mv["pred_mean"], tgt_mean.detach()) \
-                + F.mse_loss(mv["pred_logvar"], tgt_logvar.detach())
-            total = total + self.lambda_align * l_align
-            metrics["Loss/align"] = float(l_align.detach())
 
         # ---- preservation on reliable tokens --------------------------------
         pres = extras.get("preserve")
@@ -512,6 +607,9 @@ class CodeTrackCriteria(nn.Module):
             ref = outputs["score_map"]
             was_cor = was_cor.to(device=ref.device)
             trust = (~was_cor.to(torch.bool)).to(torch.float32)      # 1 = trustworthy frame
+            gate_target = extras.get("gate_target")
+            if gate_target is not None:
+                trust = gate_target.reshape(-1).to(device=ref.device, dtype=torch.float32)
             mem_rel = extras.get("frame_reliability")
             if mem_rel is not None:
                 mem_rel = mem_rel.reshape(-1).to(device=ref.device)
@@ -577,7 +675,14 @@ class CodeTrackCriteria(nn.Module):
             metrics["Loss/motion"] = float(l_motion.detach())
 
         metrics["Loss/track_corr"] = float(track_corr.detach())
-        return CriterionOutput(total, metrics)
+        # This is control data for the runner, not a scalar metric.  The first training
+        # forward exports the raw syndrome so the runner can aggregate one calibration over
+        # all DDP ranks before backward.  Keeping it in CriterionOutput is necessary because
+        # the model wrapper otherwise returns only the criterion result to DefaultTrainer.
+        pending = extras.get("syndrome_pending_calibration")
+        control = ({"syndrome_pending_calibration": pending}
+                   if pending is not None else None)
+        return CriterionOutput(total, metrics, control)
 
     # The upstream builder inspects the criterion for parameters to decide whether it
     # lives inside the computational graph.  CodeTrack's auxiliary terms are pure

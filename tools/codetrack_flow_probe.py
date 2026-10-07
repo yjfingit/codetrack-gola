@@ -18,6 +18,15 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('--mode', choices=('learn', 'interfaces'), default='interfaces')
     parser.add_argument('--steps', type=int, default=200)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--train-groups', choices=('refiner', 'denoiser', 'recovery', 'all'),
+                        default='all',
+                        help='parameter subset used by the fixed-batch capacity probe')
+    parser.add_argument('--config', type=Path,
+                        default=ROOT / 'config/GOLA/codetrack_s1/config.yaml')
+    parser.add_argument('--checkpoint', type=Path, default=None)
+    parser.add_argument('--topk', type=int, default=None)
+    parser.add_argument('--disable-diffusion', action='store_true')
     parser.add_argument('--source-package', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -38,10 +47,16 @@ def main():
     names = (view / 'trainingsetList.txt').read_text().splitlines()
     data = real_batch(view, names)
     torch.manual_seed(0)
-    cfg = load_stage_config(str(ROOT / 'config/GOLA/codetrack_s4/config.yaml'))
+    cfg = load_stage_config(str(args.config))
     cfg['model']['codetrack']['corruption_enabled'] = False
+    if args.topk is not None:
+        cfg['model']['codetrack']['topk_tokens'] = int(args.topk)
+    if args.disable_diffusion:
+        cfg['model']['codetrack']['diffusion_enabled'] = False
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
     model.load_state_dict(load_file(str(ROOT / 'weights/gola_b224.bin')), strict=False)
+    if args.checkpoint is not None:
+        model.load_state_dict(load_file(str(args.checkpoint)), strict=False)
     ct = model.codetrack
     captured = []
     handle = ct.register_forward_pre_hook(
@@ -65,7 +80,8 @@ def main():
     ct.train()
     # Remove sampling noise from this controlled capacity experiment, retaining all other
     # recovery operations; the harness smoke separately exercises training-time noise.
-    ct.denoiser.eval()
+    if ct.denoiser is not None:
+        ct.denoiser.eval()
     with torch.no_grad():
         ct.reset_sequence()
         ct(F_L=damaged)
@@ -80,13 +96,27 @@ def main():
     def error(output):
         return (1 - F.cosine_similarity(output['X_final'], teacher, dim=-1))[mask].mean()
 
-    report = dict(mode=args.mode, sequences=names, steps=args.steps,
+    report = dict(mode=args.mode, sequences=names, steps=args.steps, lr=args.lr,
+                  train_groups=args.train_groups,
                   source_package=str(args.source_package), d_input=float(din[mask].mean()))
     import codetrack
     report['source_file'] = codetrack.__file__
     if args.mode == 'learn':
-        params = [p for n, p in ct.named_parameters() if not n.startswith('head.') and p.requires_grad]
-        optimizer = torch.optim.AdamW(params, lr=1e-3, weight_decay=0)
+        prefixes = {
+            'refiner': ('refiner.',),
+            'denoiser': ('condition_proj.', 'denoiser.', 'meanvar.'),
+            'recovery': ('refiner.', 'condition_proj.', 'denoiser.', 'meanvar.'),
+            'all': tuple(),
+        }[args.train_groups]
+        selected = [(n, p) for n, p in ct.named_parameters()
+                    if not n.startswith('head.') and p.requires_grad
+                    and (not prefixes or n.startswith(prefixes))]
+        if not selected:
+            raise RuntimeError(f'no parameters selected for {args.train_groups}')
+        params = [p for _, p in selected]
+        report['trainable_tensors'] = len(selected)
+        report['trainable_parameters'] = sum(p.numel() for p in params)
+        optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=0)
         history = []
         for i in range(args.steps):
             output = run()

@@ -78,6 +78,7 @@ def run_task(model_manager: ModelManager, task_desc: ApplicationTaskDescription,
 
         emit_epoch_end_event(reversed(all_event_registries), epoch, is_train)
         runner.epoch_end(epoch, model_manager)
+        return runner.should_stop()
 
 
 def _get_all_event_listener_registries(all_contexts: ApplicationContext):
@@ -130,19 +131,24 @@ class DefaultApplication:
                           file=sys.stdout, position=0, leave=True,
                           initial=epoch_iterator.get_current()):
             print()
+            stop_requested = False
             for task_name, task in self._all_context.tasks.items():
                 data_context = self._all_context.data_inputs[task.data_name]
                 runner_context = self._all_context.runners[task.runner_name]
 
                 if task.epoch_activation_criteria(epoch):
                     self._context_manager.activate(task_name, epoch)
-                    run_task(self._model_manager, task, data_context, runner_context, epoch, self._all_context.iteration)
+                    stop_requested = run_task(
+                        self._model_manager, task, data_context, runner_context,
+                        epoch, self._all_context.iteration)
                     self._context_manager.finalize()
                     if task.is_train:
                         if self._checkpoint_dumper is not None:
                             self._checkpoint_dumper.temporary_dump(epoch, self._model_manager.version, self._model_manager.state_dict)
+                    if stop_requested:
+                        break
 
-            if self._context_manager.should_stop():
+            if stop_requested or self._context_manager.should_stop():
                 break
 
             if self._checkpoint_dumper is not None:

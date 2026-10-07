@@ -52,12 +52,27 @@ model:
     h_links_per_check: 12
     h_min_col_degree: 3
     h_locality_window: 5
+    h_layout: grid
+    h_free_edge_frac: 0.0
     h_seed: 1234
     syndrome_hidden: 128
+    decoder_type: neural_bp
+    bp_iterations: 3
+    bp_damping: 0.5
+    # Match the GPU2 epoch_05 training/evaluation recipe; abstention and explicit residual
+    # injection belong to later unverified experiments and must not affect this diagnosis.
+    abstain_enabled: true
+    abstain_threshold: 0.6
+    decode_gate_enabled: false
+    decode_gate_threshold: 0.5
+    edge_reject_margin: 0.05
+    accept_score_delta: 0.0
+    accept_enabled: false
     syndrome_cos: true
     detection_prior: 0.2
     syndrome_logit_gain: 1.0
     syndrome_gain_calibration: true
+    explicit_syndrome_weight: 0.0
     motion_enabled: true
     motion_process_noise: 0.01
     motion_measurement_noise: 0.04
@@ -65,21 +80,15 @@ model:
     memory_frames: 3
     memory_tokens: 8
     memory_dim: 128
-    topk_tokens: 32
+    topk_tokens: 8
     num_neighbours: 8
     refiner_hidden: 256
     refiner_heads: 4
-    residual_gate_init: 0.0
-    up_init_std: 0.02
+    residual_gate_init: -3.0
+    up_init_std: 0.002
     motion_bias_normalise: true
     motion_bias_scale: 0.5
-    diffusion_enabled: true
-    diffusion_steps: 2
-    diffusion_hidden: 256
-    diffusion_heads: 4
-    noise_weak_std: 0.05
-    noise_strong_std: 0.2
-    noise_strong_prob: 0.5
+    satr_rounds: 2
     template_protection: true
     template_threshold: 0.5
     gola_update_threshold: 0.84
@@ -132,9 +141,9 @@ run:
         interval: 10
   data:
     eval:
-      batch_size: 128
+      batch_size: 192
       num_io_threads: 0
-      num_workers: 4
+      num_workers: 1
       type: siamese_tracker_eval
       source:
         type: dataset
@@ -186,8 +195,6 @@ run:
             name_regex: .*
           handlers:
           - type: one_pass_evaluation_compatible
-          - type: external/PyTracking
-            file_name: results
   runner:
     test:
       type: default_eval

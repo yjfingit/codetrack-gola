@@ -168,8 +168,22 @@ run:
           # embed rules are consequently absent: a rule that matches no parameter trips the
           # framework's ``assert len(named_params) > 0, "rule must be effective"``.
           per_parameter:
+            - name_regex: 'codetrack\.(satr|refiner)\.'
+              ndim: 2
+              lr: 1.e-4
+            - name_regex: 'codetrack\.(H|diagnosis)\.'
+              ndim: 2
+              lr: 1.e-4
             - name_regex: 'codetrack\.'
               ndim: 2
+              lr: 1.e-4
+            - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
+              name_regex: 'codetrack\.(satr|refiner)\.'
+              lr: 1.e-4
+            - type: "zero_1d_param_weight_decay"
+              ndim: [ 0, 1 ]
+              name_regex: 'codetrack\.(H|diagnosis)\.'
               lr: 1.e-4
             - type: "zero_1d_param_weight_decay"
               ndim: [ 0, 1 ]
@@ -208,8 +222,14 @@ run:
         w_track_corr: 1.0
         w_track_clean: 0.25
         lambda_diag: 0.5
+        lambda_q_prior: 0.5
+        lambda_diag_rank: 0.0
+        diag_rank_margin: 0.2
+        lambda_causal_rank: 0.0
+        causal_rank_margin: 0.2
         lambda_rec: 0.2
         lambda_gain: 0.2
+        gain_margin: 0.8
         lambda_align: 0.2
         lambda_pres: 0.01
         lambda_mem: 0.1

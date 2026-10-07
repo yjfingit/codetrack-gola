@@ -49,6 +49,9 @@ fi
 if [[ -n "${ABSTAIN_THRESHOLD:-}" ]]; then
   export CODETRACK_ABSTAIN_THRESHOLD="$ABSTAIN_THRESHOLD"
 fi
+if [[ -n "${AUX_ANCHOR_SCALE:-}" ]]; then
+  export CODETRACK_AUX_ANCHOR_SCALE="$AUX_ANCHOR_SCALE"
+fi
 if [[ "${TOKEN_ACCEPT:-0}" == "1" ]]; then
   export CODETRACK_TOKEN_ACCEPT=1
 fi

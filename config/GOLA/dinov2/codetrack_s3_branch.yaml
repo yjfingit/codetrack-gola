@@ -55,13 +55,7 @@ up_init_std: 0.02
 motion_bias_normalise: true
 # How strongly the Kalman prior steers H-routed evidence selection (0 = ignored).
 motion_bias_scale: 0.5
-diffusion_enabled: true
-diffusion_steps: 2       # 2-step refinement, never a 20-100 step DDPM
-diffusion_hidden: 256
-diffusion_heads: 4
-noise_weak_std: 0.05
-noise_strong_std: 0.20
-noise_strong_prob: 0.5
+satr_rounds: 3
 
 # block 6 -- online template protection
 template_protection: false

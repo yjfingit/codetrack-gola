@@ -44,15 +44,26 @@ def _consume_syndrome_calibration(module: nn.Module, extras) -> bool:
     # ``self.diagnosis = SyndromeDiagnosis(...)``), NOT by the top-level model.
     # Walk the chain explicitly instead of guessing.
     diagnosis = None
-    for holder in (module, getattr(module, "codetrack", None),
-                   getattr(getattr(module, "module", None), "codetrack", None),
-                   getattr(module, "module", None)):
-        if holder is None:
+    # Runtime wrapping is ModelWithCriterion.model -> optional DDP.module -> GOLA.codetrack.
+    # Use a bounded breadth-first unwrap so the single-process, DDP and torch.compile shapes
+    # share one path without depending on a particular wrapper order.
+    queue = [module]
+    seen = set()
+    while queue and len(seen) < 12:
+        holder = queue.pop(0)
+        if holder is None or id(holder) in seen:
             continue
+        seen.add(id(holder))
         cand = getattr(holder, "diagnosis", None)
         if cand is not None:
             diagnosis = cand
             break
+        codetrack = getattr(holder, "codetrack", None)
+        if codetrack is not None:
+            queue.append(codetrack)
+        queue.extend((getattr(holder, "model", None),
+                      getattr(holder, "module", None),
+                      getattr(holder, "_orig_mod", None)))
     if diagnosis is None:
         return False
     try:
@@ -199,19 +210,29 @@ class DefaultTrainer(Runner):
                 with torch.set_grad_enabled(self.is_train), self._amp_auto_cast_fn():
                     criterion_output = self._model(data.input, data.target)
 
+                # The first forward supplies raw syndrome statistics.  Calibration mutates two
+                # diagnosis parameters, so the graph built before that mutation cannot be used
+                # for backward (autograd would reject its stale version counter).  Re-run the
+                # same batch once after all ranks agree on gain/offset and retain only the new
+                # graph.  Every later batch takes the ordinary single-forward path.
+                calibrated = False
+                if self.is_train:
+                    calibrated = _consume_syndrome_calibration(
+                        self._model, criterion_output.extra_metrics)
+                if calibrated:
+                    with torch.set_grad_enabled(True), self._amp_auto_cast_fn():
+                        criterion_output = self._model(data.input, data.target)
+
                 if criterion_output.metrics is None:
                     metrics['loss'] = criterion_output.loss.item()
                 else:
                     metrics['loss'] = sum(criterion_output.metrics.values())
                     metrics.update(criterion_output.metrics)
                 if criterion_output.extra_metrics is not None:
-                    metrics.update(criterion_output.extra_metrics)
-
-                # One-shot cross-rank syndrome calibration: the diagnosis head hands us the
-                # raw syndrome on its first training forward.  Consume it here, before the
-                # first backward, so every rank shares one calibrated gain/offset.
-                if self.is_train:
-                    _consume_syndrome_calibration(self._model, criterion_output.extra_metrics)
+                    # Reserved control tensors are not scalar metrics and must not enter the
+                    # logger/reducer.  Calibration above consumes this tensor exactly once.
+                    metrics.update({k: v for k, v in criterion_output.extra_metrics.items()
+                                    if k != 'syndrome_pending_calibration'})
 
                 if not torch.isfinite(criterion_output.loss):
                     output_path = get_current_task_context().get_output_path()

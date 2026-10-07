@@ -5,9 +5,9 @@
 # boundary -- with the pair sampler these modules would mix unrelated sequences, which is why
 # codetrack_spatial.yaml exists and why S1/S2/S3 use it.
 #
-# The sampler and the reset are NOT implemented yet; see docs/staged_training_design.md section 9
-# (B2/B3/B4).  Until they are, this config may be used to validate optimizer wiring and the
-# temporal loss terms, but it must NOT be read as a working temporal training setup.
+# A causal state-preservation hook is now implemented in CodeTrack (`preserve_state=True`).
+# The data sampler still emits pairs, so this config is not a complete temporal training recipe
+# until the clip sampler passes that flag at every non-boundary frame.
 # CodeTrack branch hyper-parameters.  Values are the ones annotated on the architecture
 # figure; see codetrack/config.py for the full schema.
 enabled: true
@@ -52,13 +52,7 @@ up_init_std: 0.02
 motion_bias_normalise: true
 # How strongly the Kalman prior steers H-routed evidence selection (0 = ignored).
 motion_bias_scale: 0.5
-diffusion_enabled: true
-diffusion_steps: 2       # 2-step refinement, never a 20-100 step DDPM
-diffusion_hidden: 256
-diffusion_heads: 4
-noise_weak_std: 0.05
-noise_strong_std: 0.20
-noise_strong_prob: 0.5
+satr_rounds: 3
 
 # block 6 -- online template protection
 template_protection: true

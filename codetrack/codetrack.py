@@ -136,7 +136,8 @@ class CodeTrack(nn.Module):
             dropout=cfg.refiner_dropout, residual_gate_init=cfg.residual_gate_init,
             motion_bias_scale=cfg.motion_bias_scale, up_init_std=cfg.up_init_std,
             motion_bias_normalise=cfg.motion_bias_normalise, rounds=cfg.satr_rounds,
-            residual_clip_ratio=cfg.residual_clip_ratio)
+            residual_clip_ratio=cfg.residual_clip_ratio,
+            cross_modal_anchor_scale=cfg.cross_modal_anchor_scale)
 
         # SATR owns all correction rounds. There is no dense denoiser/diffusion path.
 
@@ -475,6 +476,19 @@ class CodeTrack(nn.Module):
             "CODETRACK_ABSTAIN_THRESHOLD", self.cfg.abstain_threshold))
         if (not self.training) and abstain_enabled:
             route_support = route_support * (q >= abstain_threshold).to(q.dtype)
+        adaptive_route = bool(getattr(self.cfg, "adaptive_route_enabled", False)) or \
+            os.environ.get("CODETRACK_ADAPTIVE_ROUTE", "0") == "1"
+        if (not self.training) and adaptive_route:
+            # q is a posterior, but its absolute calibration can drift by sequence.  The second
+            # cut is therefore relative to the current frame: only tokens that are both above
+            # the absolute reliability threshold and z standard deviations above the frame mean
+            # are decoded.  `route_k` remains a hard safety budget, not a fixed write count.
+            z = float(os.environ.get("CODETRACK_ADAPTIVE_ROUTE_Z",
+                                    str(getattr(self.cfg, "adaptive_route_z", 1.0))))
+            q_cut = torch.maximum(
+                q.new_full((b, 1), abstain_threshold),
+                q.mean(dim=-1, keepdim=True) + z * q.std(dim=-1, keepdim=True, unbiased=False))
+            route_support = route_support * (q >= q_cut).to(q.dtype)
         # Optional out-of-view safeguard.  A Kalman prediction whose box is close to the
         # search-region boundary is not reliable side information: carrying history into that
         # frame can manufacture a target after it has left the image.  The margin is expressed

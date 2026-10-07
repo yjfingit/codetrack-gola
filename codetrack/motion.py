@@ -261,6 +261,14 @@ class KalmanMotionPrior(nn.Module):
         very frame it was supposed to help predict -- ground truth leaking into the current
         output rather than only into the loss.
         """
+        requested_batch = (image_size.shape[0] if image_size is not None else
+                           (box_xywh.shape[0] if box_xywh is not None else batch_size))
+        # The final evaluation batch can be smaller than the preceding batch. Kalman
+        # state is batch-shaped, so discard it when the layout changes instead of
+        # broadcasting stale sequences into the new batch.
+        if self._x is not None and requested_batch is not None \
+                and self._x.shape[0] != int(requested_batch):
+            self.reset_state()
         if box_xywh is not None and not defer_observe:
             self.observe(box_xywh, image_size, confidence=confidence, valid=valid)
         if not self._initialised or self._x is None:
@@ -454,6 +462,13 @@ class TemporalMemory(nn.Module):
         the synthesized dynamic prior tokens for the current frame.
         """
         b, n, _ = tokens.shape
+        # Evaluation batches can change size at the dataset boundary. The recurrent
+        # memory bank is batch-shaped; stale rows belong to the previous batch and
+        # must be discarded rather than assigned into the new layout.
+        if memory is not None and memory.shape[0] != b:
+            memory = None
+            memory_rel = None
+            self._admitted_once = False
         # ---- eq. 1: summarise the current frame over the target mask ---------------
         pooled = self.summary_proj(tokens)                              # (B, N, D)
         if target_mask is not None:

@@ -105,6 +105,14 @@ class CodeTrackConfig:
     # Bound a single decoded residual relative to the received token.  This prevents a sparse
     # but wrong route from producing a large feature jump; 0 disables the bound for ablations.
     residual_clip_ratio: float = 0.05
+    # Optional deterministic cross-modal parity anchor for diagnosis.  It adds a bounded
+    # direction from RGB side information toward the received TIR token; zero preserves the
+    # learned SATR path and is the production default.
+    cross_modal_anchor_scale: float = 0.0
+    # Inference route policy. `topk_tokens` is the maximum budget; adaptive routing chooses a
+    # smaller per-frame support from q and may choose zero tokens.
+    adaptive_route_enabled: bool = False
+    adaptive_route_z: float = 1.0
     # Training-only dense soft route.  Hard Top-K is kept for inference, but using it while
     # fitting gives q gradients only on the selected tokens and creates a train/eval mismatch.
     # With this switch every token receives q_i * DeltaX_i; the inference budget is unchanged.

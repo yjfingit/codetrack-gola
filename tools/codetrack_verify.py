@@ -34,8 +34,10 @@ DEFAULT_CONFIG: Dict = dict(
     enabled=True, z_len=64, x_len=256, dim=768, grid=16,
     mid_dim=128, num_checks=64, h_links_per_check=12, h_min_col_degree=3,
     h_locality_window=5, syndrome_hidden=128,
+    decoder_type="neural_bp", bp_iterations=3, bp_damping=0.5,
     topk_tokens=32, num_neighbours=8, refiner_hidden=256, refiner_heads=4,
-    diffusion_enabled=True, diffusion_steps=2, diffusion_hidden=256, diffusion_heads=4,
+    residual_gate_init=-3.0, up_init_std=0.002,
+    satr_rounds=3,
     motion_enabled=True, memory_enabled=True, memory_frames=3, memory_tokens=8, memory_dim=128,
     template_protection=True,
 )
@@ -214,13 +216,10 @@ def check_gradients(m_on, weight: str):
         "H (parity check)": ["codetrack.H.H"],
         "diagnosis (syndrome/q)": ["codetrack.diagnosis"],
         "template_pool": ["codetrack.template_pool"],
-        "refiner (H-routed)": ["codetrack.refiner"],
-        "denoiser (diffusion)": ["codetrack.denoiser"],
-        "meanvar completion": ["codetrack.meanvar"],
+        "SATR recovery": ["codetrack.satr"],
         "motion prior (Kalman)": ["codetrack.motion"],
         "temporal memory": ["codetrack.memory"],
         "template gate": ["codetrack.template_gate"],
-        "condition_proj": ["codetrack.condition_proj"],
     }
     print(f"  {'module':24s} {'grad-norm':>12s}  params")
     bad: List[str] = []

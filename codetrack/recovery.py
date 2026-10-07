@@ -28,6 +28,7 @@ rather than a second tracker.
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, Optional
 
 import torch
@@ -48,7 +49,8 @@ class SATRRecovery(nn.Module):
                  memory_dim: int = 128, dropout: float = 0.0,
                  residual_gate_init: float = 0.0, motion_bias_scale: float = 0.5,
                  up_init_std: float = 0.02, motion_bias_normalise: bool = True,
-                 rounds: int = 3, residual_clip_ratio: float = 0.05):
+                 rounds: int = 3, residual_clip_ratio: float = 0.05,
+                 cross_modal_anchor_scale: float = 0.0):
         super().__init__()
         self.dim = dim
         self.hidden = hidden
@@ -59,6 +61,7 @@ class SATRRecovery(nn.Module):
         self.motion_bias_normalise = bool(motion_bias_normalise)
         self.rounds = max(1, int(rounds))
         self.residual_clip_ratio = max(0.0, float(residual_clip_ratio))
+        self.cross_modal_anchor_scale = float(cross_modal_anchor_scale)
 
         # condition = [ K_n neighbours (flattened) | X_aux_i | template | memory | q_i ]
         neighbour_dim = dim * num_neighbours
@@ -236,6 +239,17 @@ class SATRRecovery(nn.Module):
         # ---- 5. gated residual write-back --------------------------------------
         dX = torch.sigmoid(self.residual_gate.reshape(())) * (
             self.up(ctx) + self.aux_residual(aux_tokens))                 # (B, K, C)
+        anchor_scale = float(os.environ.get(
+            "CODETRACK_AUX_ANCHOR_SCALE", str(self.cross_modal_anchor_scale)))
+        if anchor_scale != 0.0:
+            # The cross-modal difference is a parity-side-information direction, not a second
+            # tracker.  Match its norm to the learned proposal before mixing so the trust-region
+            # clip remains scale-aware and a modality mismatch cannot create an unbounded jump.
+            received = X_t[bidx, suspect_idx]
+            anchor = aux_tokens - received
+            anchor = anchor * (dX.norm(dim=-1, keepdim=True) /
+                               anchor.norm(dim=-1, keepdim=True).clamp_min(1e-6))
+            dX = dX + anchor_scale * anchor
         if self.residual_clip_ratio > 0.0:
             # A decoder may be wrong even when q is high.  Limit the update in feature space so
             # one bad token cannot erase the received representation.  The bound is scale-aware
