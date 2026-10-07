@@ -46,6 +46,9 @@ fi
 if [[ -n "${ACCEPT_SCORE_DELTA:-}" ]]; then
   export CODETRACK_ACCEPT_SCORE_DELTA="$ACCEPT_SCORE_DELTA"
 fi
+if [[ -n "${ABSTAIN_THRESHOLD:-}" ]]; then
+  export CODETRACK_ABSTAIN_THRESHOLD="$ABSTAIN_THRESHOLD"
+fi
 if [[ "${TOKEN_ACCEPT:-0}" == "1" ]]; then
   export CODETRACK_TOKEN_ACCEPT=1
 fi
