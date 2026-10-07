@@ -159,6 +159,10 @@ class CodeTrack(nn.Module):
         self._prev_admitted = False
         self._gate_inputs = None
 
+        self._motion_crop_params = None
+        self._motion_crop_size = None
+        self._motion_observe_current = False
+
     # ------------------------------------------------------------------ helpers
     def reset_sequence(self) -> None:
         """Clear per-sequence recurrent state (Kalman filter + memory bank)."""
@@ -173,6 +177,9 @@ class CodeTrack(nn.Module):
         self._gate_inputs = None
         if self.memory is not None:
             self.memory._admitted_once = False
+        self._motion_crop_params = None
+        self._motion_crop_size = None
+        self._motion_observe_current = False
 
     def _split(self, F_L: torch.Tensor) -> Dict[str, torch.Tensor]:
         z, x = self.z_len, self.x_len
@@ -241,6 +248,12 @@ class CodeTrack(nn.Module):
         self._prev_score = score.detach().reshape(score.shape[0])
         if box_xywh is not None:
             self._prev_box = box_xywh.detach().reshape(box_xywh.shape[0], 4)
+            if self._motion_observe_current and self.motion is not None:
+                # The caller supplies the accepted current-frame prediction AFTER
+                # recovery. The next prior includes it without a one-frame lag.
+                self.motion.observe(self._prev_box, self._motion_crop_size,
+                                    confidence=self._prev_score, predict=False)
+                self._motion_observe_current = False
         # The current score is only available AFTER recovery and the tracking head.
         # Refresh the evaluation decision now, using this frame's diagnostic evidence.
         if not self.training and self.template_gate is not None and self._gate_inputs is not None:
@@ -270,6 +283,7 @@ class CodeTrack(nn.Module):
                 update_state: bool = True,
                 preserve_state: bool = False,
                 route_q_override: Optional[torch.Tensor] = None,
+                search_crop_params: Optional[torch.Tensor] = None,
                 **_: object) -> Dict[str, torch.Tensor]:
         """``F_L``: (B, 768, 768) normalised fused tokens from the GOLA forward.
 
@@ -326,6 +340,21 @@ class CodeTrack(nn.Module):
         pending_obs: Optional[torch.Tensor] = None
         pending_conf: Optional[torch.Tensor] = None
         if self.motion is not None and not ablate_motion:
+            crop_aware = search_crop_params is not None
+            if crop_aware:
+                if image_size is None:
+                    raise ValueError("crop-aware motion requires image_size")
+                params = search_crop_params.detach().to(X_t).reshape(b, 2, 2)
+                if self._motion_crop_params is not None:
+                    old = self._motion_crop_params.to(params)
+                    old_size = self._motion_crop_size.to(image_size)
+                    ratio = params[:, 0] / old[:, 0]
+                    scale = ratio * old_size / image_size
+                    shift = (params[:, 1] - ratio * old[:, 1]) / image_size
+                    self.motion.rebase(scale, shift)
+                self._motion_crop_params = params
+                self._motion_crop_size = image_size.detach()
+                self._motion_observe_current = True
             # ---- D2: predict-only, then observe AFTER this frame is consumed --------
             # The order here is what makes the block causal.  ``observe()`` used to run
             # *before* the prior map was built, so M_t was a function of the current frame's
@@ -339,7 +368,7 @@ class CodeTrack(nn.Module):
                 admitted = gt_box_xywh
             elif box_confidence is not None and gt_box_xywh is not None:
                 admitted = gt_box_xywh
-            elif eval_observe and self._prev_box is not None:
+            elif eval_observe and self._prev_box is not None and not crop_aware:
                 # Inference: the previous frame's own prediction is the only legitimate
                 # observation available (there is no ground truth while tracking).
                 admitted = self._prev_box
@@ -349,7 +378,7 @@ class CodeTrack(nn.Module):
                 box_xywh=admitted, image_size=image_size,
                 confidence=admitted_conf, valid=None,
                 batch_size=b, device=X_t.device, dtype=X_t.dtype,
-                defer_observe=True)
+                defer_observe=True, advance=crop_aware)
         motion_map = motion_out.get("motion_map")
         uncertainty = motion_out.get("uncertainty")
 
@@ -726,7 +755,8 @@ class CodeTrack(nn.Module):
         # measurement noise, so a low-confidence box moves the state only slightly.
         if self.motion is not None and pending_obs is not None and image_size is not None:
             self.motion.observe(pending_obs, image_size,
-                                confidence=pending_conf, valid=None)
+                                confidence=pending_conf, valid=None,
+                                predict=(search_crop_params is None))
 
         return {
             "X_final": X_final,

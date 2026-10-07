@@ -106,6 +106,31 @@ class KalmanMotionPrior(nn.Module):
         self._x: Optional[torch.Tensor] = None      # (B, 8) normalised
         self._P: Optional[torch.Tensor] = None      # (B, 8, 8)
         self._initialised = False
+        self.last_innovation = None
+        self.last_mahalanobis = None
+
+    def rebase(self, scale: torch.Tensor, translation: torch.Tensor) -> None:
+        """Move a posterior between normalised search-crop coordinate systems.
+
+        If p_new = scale * p_old + translation, extents and velocities scale,
+        while only centres translate. Covariance uses the same affine Jacobian.
+        This operation uses crop geometry, never current-frame annotations.
+        """
+        if self._x is None:
+            return
+        scale = scale.to(self._x).reshape(-1, 2)
+        translation = translation.to(self._x).reshape(-1, 2)
+        if scale.shape[0] != self._x.shape[0]:
+            raise ValueError("crop transform batch does not match Kalman state")
+        if not bool(torch.isfinite(scale).all() and (scale > 0).all()
+                    and torch.isfinite(translation).all()):
+            raise ValueError("invalid search-crop transform")
+        jac = scale.repeat(1, 4)
+        offset = torch.cat([translation, torch.zeros_like(translation).repeat(1, 3)], -1)
+        self._x = self._x * jac + offset
+        self._P = self._P * jac[:, :, None] * jac[:, None, :]
+        if self.last_innovation is not None:
+            self.last_innovation = self.last_innovation * scale.repeat(1, 2)
 
     @staticmethod
     def _flat_cov(P: torch.Tensor, b: int) -> torch.Tensor:
@@ -182,7 +207,8 @@ class KalmanMotionPrior(nn.Module):
 
     def observe(self, box_xywh: torch.Tensor, image_size: torch.Tensor,
                 confidence: Optional[torch.Tensor] = None,
-                valid: Optional[torch.Tensor] = None) -> None:
+                valid: Optional[torch.Tensor] = None,
+                predict: bool = True) -> None:
         """Feed one observed box into the filter (measurement update).
 
         ``valid`` (B,) bool marks samples whose observation should be ignored; the
@@ -216,8 +242,9 @@ class KalmanMotionPrior(nn.Module):
 
         # if the filter was seeded on a different batch before, re-seed those rows
         A = self.A.to(box_xywh.dtype)
-        x_pred = self._x @ A.t()
-        P_pred = self._flat_cov(A @ self._P @ A.t() + self.Q.to(box_xywh.dtype), b)
+        x_pred = self._x @ A.t() if predict else self._x
+        P_pred = (self._flat_cov(A @ self._P @ A.t() + self.Q.to(box_xywh.dtype), b)
+                  if predict else self._P)
 
         H = self.H_obs.to(box_xywh.dtype)
         S = H @ P_pred @ H.t() + R                                  # (B, 4, 4)
@@ -249,6 +276,7 @@ class KalmanMotionPrior(nn.Module):
                 device: Optional[torch.device] = None,
                 dtype: Optional[torch.dtype] = None,
                 defer_observe: bool = False,
+                advance: bool = False,
                 ) -> Dict[str, torch.Tensor]:
         """One frame of the filter.
 
@@ -294,6 +322,10 @@ class KalmanMotionPrior(nn.Module):
         A = self.A.to(dtype)
         x_pred = self._x @ A.t()
         P_pred = self._flat_cov(A @ self._P @ A.t() + self.Q.to(dtype), b)
+        if advance:
+            # Exactly one transition per frame; the later head observation must call
+            # observe(predict=False). The legacy deferred API remains available.
+            self._x, self._P = x_pred, P_pred
 
         # ---- covariance read-out ------------------------------------------------
         # ``torch.diagonal`` indexing is ambiguous once a leading axis is involved, so the

@@ -455,6 +455,7 @@ class GOLA_DINOv2(nn.Module):
             image_corruption_mask=image_corruption_mask,
             update_state=True,
             preserve_state=bool(kwargs.get("preserve_state", False)),
+            search_crop_params=kwargs.get("search_crop_params"),
         )
         with torch.autocast('cuda', enabled=False):
             head_out = self.head(out["X_final"].float())

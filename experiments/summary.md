@@ -14,7 +14,7 @@ identify the exact config, checkpoint, and log used.
 | E0005 | E0002 with inference residual scale 0.5 | same 10 | 59.35 | 48.63 | +1.28 / +0.48 pp | continue full-test validation | [record](E0005-scale-half.md) |
 | E0006 | E0002 with q abstention threshold 0.8 | stopped before completion | pending | pending | early sequences reverted to baseline | stop low-value sweep | [record](E0006-high-threshold.md) |
 | E0007 | E0005, full LasHeR-test | 245 sequences | n/a | n/a | interrupted at 238/245; no result archive | invalid/incomplete | [record](E0007-full-scale-half.md) |
-| E0008 | E0005, full LasHeR-test retry | 245 sequences | pending | pending | GPU4 retry; pending | pending | [record](E0008-full-scale-half-retry.md) |
+| E0008 | E0005, full LasHeR-test retry | stopped at 36/245; no live worker | n/a | n/a | no complete archive | invalid/incomplete | [record](E0008-full-scale-half-retry.md) |
 | E0009 | Legacy continuous-clip SATR probes | 10 LasHeR-train clips, length 4 | n/a | n/a | feature diagnostics only; oracle q used for SATR training | not evidence of learned correction timing | [record](E0009-legacy-clip-probes.md) |
 | E0010 | Causal clip recipe: soft training route, frozen q during SATR, residual trust-region clip | 10 LasHeR-train clips, length 4, 1 seed | n/a | n/a | learned-route feature gain -0.0000013; healthy drift 0.000115 | diagnostic pass for stability, not a tracking result; no full evaluation | [record](E0010-causal-soft-trust.md) |
 | E0011 | Same recipe with strict 7/3 sequence holdout and validation checkpoint selection | 7 train + 3 unseen LasHeR-train clips, length 4, 1 seed | n/a | n/a | held-out q-AUROC 0.876; bad-token recovery +0.00038; tracking-loss gain +0.0625; healthy drift 0.000180 | retain as first promising training recipe; needs split/seed confirmation | [record](E0011-causal-holdout.md) |
@@ -23,6 +23,8 @@ identify the exact config, checkpoint, and log used.
 | E0014 | Production-style 10-sequence evaluation of E0013 candidate | LasHeR-test selected 10, serial, GPU4 | 57.882 | 47.929 | -0.193 / -0.224 pp vs paired GOLA (PR/SR) | reject candidate as final; midredboy and boyunder2baskets are damaging | [record](E0014-candidate-10seq.md) |
 | E0015 | Frame-level baseline-protected write-back, isolated parallel evaluation | LasHeR-test selected 10, GPU4, NPROC=2 | 57.926 | 47.964 | -0.149 / -0.189 pp vs paired GOLA (PR/SR) | reject as final; slight improvement but still below baseline | [record](E0015-baseline-protected.md) |
 | E0016 | CPU prefetch: 8 eval workers + 4 I/O threads | `bike2left` serial correctness check, GPU4 | 94.55 | 81.34 | exact metric match to serial; single-sequence wall time 22.99s | retain as optional full-eval setting; single short sequence is slower due startup overhead | [record](E0016-cpu-prefetch.md) |
+| E0017 | Correct moving-crop Kalman geometry and observation timing | 4 physical/state witnesses; structural 97/97 | n/a | n/a | state correctness only | opt-in replay path; production integration still required | [record](E0017-causal-motion-coordinates.md) |
+| E0018 | Causal predicted-crop replay versus GT-centred control | train10, 7/3 sequence holdout, mid-video clips, seed 42 | pending | pending | no closed-loop score claimed | prepared | [record](E0018-causal-replay.md) |
 
 ## Current Read
 

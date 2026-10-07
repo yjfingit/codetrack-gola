@@ -6,6 +6,11 @@
 # The models are downloaded (scripts/00_env.sh) or fetched from the upstream release.
 weights/*.bin
 weights/*.pth
+weights/*.safetensors
+_probe/**/*.safetensors
+_probe/**/*.bin
+_probe/**/*.pth
+_probe/**/results.zip
 
 # Paper PDFs (165 MB).  docs/paper/README.md and docs/paper/math/README.md are kept:
 # they are the index that says which paper each file was and where it came from.
