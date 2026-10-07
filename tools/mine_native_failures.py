@@ -134,10 +134,16 @@ def main():
                             tensors[f'{role}.{sample_index}.{key}'] = value.contiguous().clone()
                 event_path = args.output / f'seq{sequence_index:02d}_event{len(events):02d}.safetensors'
                 save_file(tensors, str(event_path))
-                events.append({'frame': frame, 'kind': 'tracking_failure' if valid else 'unknown_visibility',
-                               'clip': clip_rows, 'history': [s['row'] for s in history],
-                               'qualified_past_reference_count': sum(s['row']['iou'] >= .5 for s in history),
-                               'tensors': str(event_path)})
+                event = {'sequence': name, 'frame': frame,
+                         'kind': 'tracking_failure' if valid else 'unknown_visibility',
+                         'clip': clip_rows, 'history': [s['row'] for s in history],
+                         'qualified_past_reference_count': sum(s['row']['iou'] >= .5 for s in history),
+                         'tensors': str(event_path)}
+                event_json = event_path.with_suffix('.event.json')
+                temporary = event_json.with_suffix('.tmp')
+                temporary.write_text(json.dumps(event, indent=2) + '\n')
+                temporary.replace(event_json)
+                events.append(event)
                 last_event = frame
             # Admission is causal and does not inspect this frame's annotation.
             if out['confidence'] > .84:
