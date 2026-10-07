@@ -175,6 +175,10 @@ class GOLA_DINOv2(nn.Module):
         count = min(int(max_tokens), n)
         if count <= 0:
             return corrupted.new_zeros(b, n)
+        # Replacing an identical observation is a no-op, irrespective of tiny
+        # differences between singleton and batched head kernels.
+        if torch.equal(corrupted, clean):
+            return corrupted.new_zeros(b, n)
         with torch.no_grad(), torch.autocast('cuda', enabled=False):
             task_loss_base = None
             if tracking_targets is not None:
@@ -228,6 +232,8 @@ class GOLA_DINOv2(nn.Module):
             # z-score this keeps an entirely clean frame at exactly zero instead of assigning
             # every healthy token a 0.5 target merely because floating-point noise exists.
             positive = impact[:, :count].clamp_min(0.0)
+            changed = (corrupted[:, :count] != clean[:, :count]).any(dim=-1)
+            positive = positive.masked_fill(~changed, 0.)
             scale = positive.amax(dim=1, keepdim=True).clamp_min(1e-12)
             ratio = (positive / scale).clamp(0.0, 1.0)
             threshold = min(max(float(min_ratio), 0.0), 0.99)

@@ -1,7 +1,7 @@
 # E0018: Causal crops versus GT-centred training control
 
 - Date: 2026-10-07.
-- Status: prepared, not yet a result.
+- Status: first attempt failed at validation after diagnosis and the first SATR update; corrected before retry.
 - Hypothesis: tracking-loss gains in GT-centred short clips overestimate useful correction under predicted crops. A matched causal replay test will decide whether the current q/SATR recipe deserves any additional training.
 - Source: implementation commit is recorded by the launcher before execution. Starting snapshot `8058fb5`.
 - Data: versioned `experiments/train10.txt`, LasHeR-train only. Two contiguous 4-frame windows at 25% and 75% of each video; seven train sequences, last three entirely held out. One seed, 42.
@@ -14,6 +14,7 @@
 - Outputs: `_probe/E0018/{baseline,gt_centered}.{json,safetensors,log}` and per-frame `.trajectory.json` crop provenance. Large files remain outside Git.
 - Promotion gate: positive held-out tracking and selected-box IoU gains, bounded healthy drift, no large clip failures; then run actual closed-loop LasHeR-train validation. This cache is off-policy and never counts as PR/SR. Negative results reject the recipe; no seed or threshold sweep follows.
 - PR/SR / checkpoint / conclusion: pending.
+- First launch source: `67ed7ac`, GPU4 PID 3411599. Terminal log: `_probe/E0018/baseline_attempt1.log`. Failure: AUROC helper imported unavailable `sklearn`; no selected checkpoint exists. Replaced it with tie-aware rank AUROC in PyTorch. A 12-trial identical-token witness with the actual pretrained head passed (zero false positive labels; head batch differences up to 9.54e-7). Explicit no-op masking now makes this invariant independent of batch-kernel numerics. The retry also reports unedited-frame label density.
 
 ```bash
 source scripts/00_env.sh

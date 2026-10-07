@@ -134,7 +134,12 @@ def main() -> None:
         "positive_fraction": float((torch.cat(list(causal_by_name.values())) > 0).float().mean()),
         "strong_fraction": float((torch.cat(list(causal_by_name.values())) >= 0.5).float().mean()),
         "max": float(torch.cat(list(causal_by_name.values())).max()),
+        "unedited_positive_fraction": float(torch.cat([
+            causal_by_name[name][damage == 0].reshape(-1)
+            for name, _, _, _, damage, _ in cached]).gt(0).float().mean()),
     }
+    if causal_stats["unedited_positive_fraction"] != 0.:
+        raise RuntimeError("identical clean/corrupted features produced nonzero impact labels")
     print(json.dumps({"causal_target_stats": causal_stats}), flush=True)
     sequence_order = list(dict.fromkeys(row[0].rsplit(":", 1)[0] for row in cached))
     if not 0 < args.val_count < len(sequence_order):
@@ -202,8 +207,15 @@ def main() -> None:
         scores = scores.reshape(-1).float()
         if not bool(labels.any()) or not bool((~labels).any()):
             return None
-        from sklearn.metrics import roc_auc_score
-        return float(roc_auc_score(labels.cpu().numpy(), scores.cpu().numpy()))
+        order = torch.argsort(scores)
+        _, counts = torch.unique_consecutive(scores[order], return_counts=True)
+        ends = counts.cumsum(0).to(scores.dtype)
+        average_ranks = ends - (counts.to(scores.dtype) - 1.) * .5
+        ranks = torch.empty_like(scores)
+        ranks[order] = torch.repeat_interleave(average_ranks, counts)
+        pos = labels.sum().to(scores.dtype)
+        neg = (~labels).sum().to(scores.dtype)
+        return float((ranks[labels].sum() - pos * (pos + 1.) / 2.) / (pos * neg))
 
     def step_clip(name, clean_f, cor_f, boxes, damage, crop_params, training=True):
         ct.reset_sequence()
