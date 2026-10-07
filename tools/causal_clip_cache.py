@@ -8,6 +8,13 @@ from pathlib import Path
 import json
 
 
+class ReplayCache(list):
+    """Feature rows plus supervision-only provenance, never student conditions."""
+    def __init__(self):
+        super().__init__()
+        self.metadata = {}
+
+
 def build_replay_cache(args):
     import numpy as np
     import torch
@@ -25,6 +32,7 @@ def build_replay_cache(args):
     from trackit.runner.evaluation.distributed.tracker_evaluator.components.post_process.box_with_score_map import (
         PostProcessing_BoxWithScoreMap)
     from tools.preflight_acceptance import load_stage_config
+    from codetrack.observation_faults import TRAIN_FAULTS, HELDOUT_FAULTS, degrade_observation
 
     root = Path(__file__).resolve().parents[1]
     dataset = Path(args.dataset)
@@ -73,10 +81,12 @@ def build_replay_cache(args):
         out = model.head(model.codetrack._split(f)['X_TIR'])
         return f, out
 
-    cache, telemetry = [], []
+    cache, telemetry = ReplayCache(), []
+    physical = getattr(args, 'observation_recipe', 'legacy_blackout') == 'physical_mix'
+    val_names = set(names[-args.val_count:])
     try:
         with torch.no_grad():
-            for name in names:
+            for sequence_index, name in enumerate(names):
                 seq = dataset / 'trainingset' / name
                 gt = np.loadtxt(seq / 'init.txt', delimiter=',', ndmin=2)
                 files = [sorted((seq / m).glob('*.jpg')) for m in ('visible', 'infrared')]
@@ -85,13 +95,22 @@ def build_replay_cache(args):
                     raise ValueError(f'{name}: insufficient frames')
                 # Middle-video windows expose transitions absent from first-4-frame probes.
                 starts = np.linspace(.25, .75, args.clips_per_sequence)
-                for frac in starts:
+                for window_index, frac in enumerate(starts):
                     start = min(int(frac * count), count - args.clip_length - 1)
                     init_box = gt[start].copy(); init_box[2:] += init_box[:2]
                     initial = read(files, start)
                     mean = initial.mean((-2, -1))
                     z, zm = template(initial, init_box, mean)
                     d, dm = z.clone(), zm.clone()
+                    teacher_d, teacher_dm = d.clone(), dm.clone()
+                    generator = torch.Generator(device='cuda').manual_seed(
+                        args.seed + sequence_index * 1000 + window_index * 100)
+                    families = TRAIN_FAULTS
+                    if name in val_names and getattr(args, 'validation_degradation', 'seen') == 'heldout':
+                        families = HELDOUT_FAULTS
+                    family = families[(sequence_index * args.clips_per_sequence + window_index) % len(families)]
+                    if name in val_names and getattr(args, 'validation_degradation', 'seen') == 'natural':
+                        family = 'natural'
                     provider = SiamFCCroppingParameterSimpleProvider(4., 10.)
                     provider.initialize(init_box)
                     clean, corrupt, boxes, damage, params_rows, rows = [], [], [], [], [], []
@@ -102,20 +121,37 @@ def build_replay_cache(args):
                             params = get_siamfc_cropping_params(annotation, 4., np.array((224, 224)))
                         else:
                             params = provider.get(np.array((224, 224)))
-                        x, actual = crop(image, (224, 224), params, mean)
+                        severity = (0., .5, .85, 0.)[(frame - start - 1) % 4]
+                        if physical:
+                            degraded_image = degrade_observation(
+                                image, family, severity, generator, provider.cached_bbox.copy())
+                            cor, actual = crop(degraded_image, (224, 224), params, mean)
+                            x, teacher_params = crop(image, (224, 224), params, mean)
+                            assert np.array_equal(actual, teacher_params)
+                        else:
+                            x, actual = crop(image, (224, 224), params, mean)
+                            cor = x.clone()
                         target = apply_siamfc_cropping_to_boxes(annotation, actual)
                         cx, cy = (target[:2] + target[2:]) * .5
                         bw, bh = target[2:] - target[:2]
                         box = np.array([cx, cy, max(bw, .001), max(bh, .001)])
                         frac_damage = (0., .18, .32, 0.)[(frame - start - 1) % 4]
-                        cor = x.clone()
-                        if frac_damage:
+                        if not physical and frac_damage:
                             lo = np.floor([cx-frac_damage*bw, cy-frac_damage*bh]).clip(0, 224).astype(int)
                             hi = np.ceil([cx+frac_damage*bw, cy+frac_damage*bh]).clip(0, 224).astype(int)
                             cor[3:, lo[1]:hi[1], lo[0]:hi[0]] = 0.
-                        f, head = features(z, x, d, zm, dm)
-                        fc, _ = features(z, cor, d, zm, dm) if frac_damage else (f, head)
-                        decoded = post(head)
+                        if physical:
+                            fc, student_head = features(z, cor, d, zm, dm)
+                            if torch.equal(cor, x) and torch.equal(d, teacher_d):
+                                f, head = fc, student_head
+                            else:
+                                f, head = features(z, x, teacher_d, zm, teacher_dm)
+                            decoded = post(student_head)
+                            frac_damage = severity if family != 'natural' else 0.
+                        else:
+                            f, head = features(z, x, d, zm, dm)
+                            fc, student_head = features(z, cor, d, zm, dm) if frac_damage else (f, head)
+                            decoded = post(head)
                         pred_crop = decoded['box'][0].cpu().double().numpy()
                         pred = apply_siamfc_cropping_to_boxes(pred_crop, reverse_siamfc_cropping_params(actual))
                         wh_image = np.array([image.shape[-1], image.shape[-2]])
@@ -124,17 +160,55 @@ def build_replay_cache(args):
                         conf = float(decoded['confidence'][0])
                         provider.update(conf, pred, wh_image)
                         if conf > .84 and bool((pred[2:] > pred[:2]).all()):
-                            d, dm = template(image, pred, mean)
+                            d, dm = template(degraded_image if physical else image, pred, mean)
+                            teacher_d, teacher_dm = template(image, pred, mean)
                         clean.append(f); corrupt.append(fc); boxes.append(box)
                         damage.append(frac_damage); params_rows.append(actual)
+                        def iou_against_target(head_out):
+                            selected = post(head_out)['box'][0]
+                            truth = selected.new_tensor(target)
+                            intersection = (torch.minimum(selected[2:], truth[2:]) -
+                                            torch.maximum(selected[:2], truth[:2])).clamp_min(0.).prod()
+                            union = ((selected[2:] - selected[:2]).clamp_min(0.).prod() +
+                                     (truth[2:] - truth[:2]).clamp_min(0.).prod() - intersection)
+                            return float(intersection / union.clamp_min(1e-6))
+                        teacher_iou = iou_against_target(head)
+                        teacher_score = float(post(head)['confidence'][0])
+                        feature_change = 1. - torch.nn.functional.cosine_similarity(
+                            model.codetrack._split(fc)['X_TIR'], model.codetrack._split(f)['X_TIR'], dim=-1)
+                        if physical and frac_damage > 0 and frame == start + 2 \
+                                and getattr(args, 'save_observation_examples', False):
+                            from PIL import ImageDraw
+                            preview_dir = args.output.parent / 'observation_examples'
+                            preview_dir.mkdir(parents=True, exist_ok=True)
+                            canvas = Image.new('RGB', (448, 480), 'white')
+                            draw = ImageDraw.Draw(canvas)
+                            for row_index, source in enumerate((image, degraded_image)):
+                                raw, _, _ = apply_siamfc_cropping(
+                                    source, np.array((224, 224)), params, 'bilinear', False, mean)
+                                for modality_index in range(2):
+                                    pixels = raw[modality_index * 3:(modality_index + 1) * 3].clamp(0, 255)
+                                    panel = Image.fromarray(pixels.byte().permute(1, 2, 0).cpu().numpy())
+                                    canvas.paste(panel, (modality_index * 224, row_index * 240 + 16))
+                            draw.text((4, 2), 'reference RGB / TIR (supervision only)', fill='black')
+                            draw.text((4, 242), f'{family}: observed RGB / TIR', fill='black')
+                            canvas.save(preview_dir / f'{sequence_index}_{window_index}_{family}.png')
                         rows.append({'frame': frame, 'crop_params': actual.tolist(),
                                      'gt_in_crop': box.tolist(), 'baseline_box': pred.tolist(),
-                                     'baseline_confidence': conf})
-                    label = f'{name}:{start}'
+                                     'baseline_confidence': conf,
+                                     'degradation_family': family if physical else 'legacy_blackout',
+                                     'severity': frac_damage,
+                                     'teacher_selected_iou': teacher_iou,
+                                     'student_selected_iou': iou_against_target(student_head),
+                                     'teacher_reliable': teacher_iou >= .5 and teacher_score >= .5,
+                                     'reference_equals_received': bool(torch.equal(f, fc)),
+                                     'backbone_feature_deviation': float(feature_change.mean())})
+                    label = f'{getattr(args, "label_prefix", "")}{name}:{start}'
                     cache.append((label, torch.cat(clean), torch.cat(corrupt),
                                   torch.tensor(np.asarray(boxes), device='cuda', dtype=torch.float32),
                                   torch.tensor(damage, device='cuda', dtype=torch.float32),
                                   torch.tensor(np.asarray(params_rows), device='cuda', dtype=torch.float32)))
+                    cache.metadata[label] = rows
                     telemetry.append({'sequence': name, 'start': start, 'frames': rows})
                     print(json.dumps({'cached': label, 'crop_policy': args.crop_policy}), flush=True)
     finally:
@@ -142,5 +216,8 @@ def build_replay_cache(args):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.with_suffix('.trajectory.json').write_text(json.dumps({
         'policy': args.crop_policy, 'gt_input_frames': 'clip initialisation only' if args.crop_policy == 'baseline' else 'every frame (oracle control)',
+        'observation_recipe': getattr(args, 'observation_recipe', 'legacy_blackout'),
+        'prediction_and_template_source': 'degraded student observations' if physical else 'clean baseline (legacy oracle-history control)',
+        'teacher_use': 'supervision targets only' if physical else 'legacy control',
         'windows': telemetry}, indent=2) + '\n')
     return cache

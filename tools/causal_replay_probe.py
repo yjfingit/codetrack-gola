@@ -35,10 +35,17 @@ def main() -> None:
     ap.add_argument("--crop-policy", choices=("baseline", "gt_centered"), default="baseline")
     ap.add_argument("--clips-per-sequence", type=int, default=2)
     ap.add_argument("--decoder-type", choices=("neural_bp", "syndrome_bp"), default="neural_bp")
-    ap.add_argument("--tracking-quality", choices=("self", "fixed_reference"), default="self")
+    ap.add_argument("--tracking-quality", choices=("self", "fixed_reference", "fixed_gt"), default="self")
+    ap.add_argument("--observation-recipe", choices=("legacy_blackout", "physical_mix"), default="legacy_blackout")
+    ap.add_argument("--validation-degradation", choices=("seen", "heldout", "natural"), default="seen")
+    ap.add_argument("--native-validation", action="store_true",
+                    help="also evaluate untouched held-out LasHeR observations")
+    ap.add_argument("--save-observation-examples", action="store_true")
     args = ap.parse_args()
     if args.clip_length < 4 or args.clips_per_sequence < 1:
         ap.error("use clip-length >= 4 and clips-per-sequence >= 1")
+    if args.observation_recipe == "physical_mix" and args.crop_policy != "baseline":
+        ap.error("physical observations require student-predicted crops")
 
     import numpy as np
     import torch
@@ -57,11 +64,24 @@ def main() -> None:
     from trackit.runner.evaluation.distributed.tracker_evaluator.components.post_process.box_with_score_map import (
         PostProcessing_BoxWithScoreMap)
     cached = build_replay_cache(args)
+    native_cached = []
+    if args.native_validation:
+        from copy import copy
+        native_args = copy(args)
+        native_args.sequence_manifest = args.output.parent / "native_sequences.txt"
+        native_args.sequence_manifest.write_text("\n".join(
+            Path(args.sequence_manifest).read_text().splitlines()[-args.val_count:]) + "\n")
+        native_args.label_prefix = "native/"
+        native_args.validation_degradation = "natural"
+        native_args.output = args.output.with_name(args.output.stem + ".native_cache.json")
+        native_cached = build_replay_cache(native_args)
     post = PostProcessing_BoxWithScoreMap(torch.device("cuda"), (16, 16), (224, 224), .45)
     post.start()
 
     # Rebuild with causal motion. Temporal memory stays off in this minimal recipe so the
     # first temporal experiment isolates motion-conditioned correction.
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
     cfg = load_stage_config(str(ROOT / "config/GOLA/codetrack_s1/config.yaml"))
     cfg["model"]["codetrack"]["corruption_enabled"] = False
     cfg["model"]["codetrack"]["motion_enabled"] = True
@@ -70,6 +90,9 @@ def main() -> None:
     cfg["model"]["codetrack"]["topk_tokens"] = int(args.topk)
     cfg["model"]["codetrack"]["residual_clip_ratio"] = float(args.residual_clip_ratio)
     cfg["model"]["codetrack"]["soft_route_training"] = True
+    if args.observation_recipe == "physical_mix":
+        cfg["model"]["codetrack"].update(soft_route_training=False,
+                                        match_inference_route_training=True)
     cfg["model"]["codetrack"]["abstain_enabled"] = True
     cfg["model"]["codetrack"]["abstain_threshold"] = float(args.abstain_threshold)
     cfg["model"]["codetrack"]["motion_route_scale"] = 0.0
@@ -81,6 +104,13 @@ def main() -> None:
     model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().float().eval()
     model.load_state_dict(load_file(str(ROOT / "weights/gola_b224.bin")), strict=False)
     ct = model.codetrack
+    if args.observation_recipe == "physical_mix":
+        def assert_student_conditions(_module, _inputs, kwargs):
+            for key in ("gt_box_xywh", "corruption_mask", "image_corruption_mask",
+                        "was_corrupted", "route_q_override", "clean_tokens", "x_clean"):
+                if kwargs.get(key) is not None:
+                    raise RuntimeError(f"supervision-only condition entered student: {key}")
+        ct.register_forward_pre_hook(assert_student_conditions, with_kwargs=True)
     H = ct.H.matrix().detach()
     # Stage 1 uses the causal tracking-impact target.  The synthetic edit says where pixels were
     # changed, but not every changed token harms the head; fitting that injector mask was the
@@ -93,18 +123,6 @@ def main() -> None:
     for p in diag_params:
         p.requires_grad_(True)
     diag_opt = torch.optim.AdamW(diag_params, lr=5e-4, weight_decay=1e-5)
-
-    def make_mask(box, damage_fraction):
-        cx, cy, bw, bh = box
-        if float(damage_fraction) <= 0.0:
-            return torch.zeros(1, 256, device="cuda", dtype=torch.bool)
-        x0, x1 = int(max(0, cx - damage_fraction * bw)) // 14, int(min(224, cx + damage_fraction * bw) + 13) // 14
-        y0, y1 = int(max(0, cy - damage_fraction * bh)) // 14, int(min(224, cy + damage_fraction * bh) + 13) // 14
-        m = torch.zeros(1, 256, device="cuda", dtype=torch.bool)
-        for yy in range(max(0, y0), min(16, y1)):
-            for xx in range(max(0, x0), min(16, x1)):
-                m[:, yy * 16 + xx] = True
-        return m
 
     def tracking_targets(box_xywh, reference_head=None):
         cx, cy, bw, bh = box_xywh
@@ -123,7 +141,7 @@ def main() -> None:
             "positive_sample_map_dim_indices": torch.as_tensor(pos, device="cuda", dtype=torch.long),
             "boxes": gt[None],
         }
-        if args.tracking_quality == "fixed_reference":
+        if args.tracking_quality in ("fixed_reference", "fixed_gt"):
             if reference_head is None:
                 raise ValueError("fixed quality requires a frozen reference head")
             from codetrack.criteria import bbox_overlaps
@@ -131,14 +149,15 @@ def main() -> None:
             positions = target["positive_sample_map_dim_indices"]
             if positions.numel():
                 selected = reference_head["boxes"].reshape(1, -1, 4)[0, positions]
-                quality.flatten(1)[0, positions] = bbox_overlaps(
-                    gt.expand(len(pos), -1), selected, is_aligned=True).detach()
+                quality.flatten(1)[0, positions] = (1. if args.tracking_quality == "fixed_gt" else
+                    bbox_overlaps(gt.expand(len(pos), -1), selected, is_aligned=True).detach())
             target["score_quality_map"] = quality.detach()
         return target
 
     causal_by_name = {}
+    trusted_by_name = {}
     with torch.no_grad():
-        for name, clean_f, cor_f, boxes, damage, crop_params in cached:
+        for name, clean_f, cor_f, boxes, damage, crop_params in list(cached) + list(native_cached):
             targets = []
             for t in range(args.clip_length):
                 clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
@@ -150,16 +169,29 @@ def main() -> None:
                     tracking_targets=tracking_targets(boxes[t], clean_head), max_tokens=256,
                     min_ratio=0.25))
             causal_by_name[name] = torch.cat(targets, dim=0)
+            if args.observation_recipe == "physical_mix":
+                source_metadata = cached.metadata if name in cached.metadata else native_cached.metadata
+                trusted_by_name[name] = torch.tensor(
+                    [r["teacher_reliable"] for r in source_metadata[name]],
+                    device="cuda", dtype=torch.bool)[:, None].expand(-1, 256)
+            else:
+                trusted_by_name[name] = torch.ones_like(causal_by_name[name], dtype=torch.bool)
     causal_stats = {
-        "mean": float(torch.cat(list(causal_by_name.values())).mean()),
-        "positive_fraction": float((torch.cat(list(causal_by_name.values())) > 0).float().mean()),
-        "strong_fraction": float((torch.cat(list(causal_by_name.values())) >= 0.5).float().mean()),
-        "max": float(torch.cat(list(causal_by_name.values())).max()),
+        "mean": float(torch.cat([causal_by_name[r[0]] for r in cached]).mean()),
+        "positive_fraction": float((torch.cat([causal_by_name[r[0]] for r in cached]) > 0).float().mean()),
+        "strong_fraction": float((torch.cat([causal_by_name[r[0]] for r in cached]) >= 0.5).float().mean()),
+        "max": float(torch.cat([causal_by_name[r[0]] for r in cached]).max()),
         "unedited_positive_fraction": float(torch.cat([
             causal_by_name[name][damage == 0].reshape(-1)
             for name, _, _, _, damage, _ in cached]).gt(0).float().mean()),
+        "trusted_frame_fraction": float(torch.cat([v[:, 0] for v in trusted_by_name.values()]).float().mean()),
     }
-    if causal_stats["unedited_positive_fraction"] != 0.:
+    no_op_targets = [causal_by_name[name][torch.tensor(
+        [r["reference_equals_received"] for r in cached.metadata[name]], device="cuda")].flatten()
+        for name, *_ in cached]
+    no_op = torch.cat(no_op_targets)
+    causal_stats["no_op_positive_fraction"] = float(no_op.gt(0).float().mean()) if no_op.numel() else None
+    if causal_stats["no_op_positive_fraction"] not in (0., None):
         raise RuntimeError("identical clean/corrupted features produced nonzero impact labels")
     print(json.dumps({"causal_target_stats": causal_stats}), flush=True)
     sequence_order = list(dict.fromkeys(row[0].rsplit(":", 1)[0] for row in cached))
@@ -196,14 +228,17 @@ def main() -> None:
                 causal = causal_by_name[_name][t:t + 1].to(d["q_logits"].device)
                 if args.decoder_type == "syndrome_bp":
                     bits = (causal >= .5).float()
-                    known = (causal == 0.) | (causal >= .5)
+                    known = ((causal == 0.) | (causal >= .5)) & trusted_by_name[_name][t:t + 1]
                     parity_bits = torch.einsum("mn,bn->bm", (H > 0).float(), bits).remainder(2.)
                     check_known = torch.einsum("mn,bn->bm", (H > 0).float(), (~known).float()) == 0.
                     unary = F.binary_cross_entropy_with_logits(d["channel_logits"], bits, reduction="none")
                     posterior = F.binary_cross_entropy_with_logits(d["q_logits"], bits, reduction="none")
-                    parity = F.binary_cross_entropy_with_logits(d["parity_logits"], parity_bits, reduction="none")
-                    loss = ((unary + posterior)[known].mean() +
-                            (parity[check_known].mean() if bool(check_known.any()) else parity.sum() * 0.))
+                    parity_target = (torch.where(check_known, parity_bits, torch.full_like(parity_bits, .5))
+                                     if args.observation_recipe == "physical_mix" else parity_bits)
+                    parity = F.binary_cross_entropy_with_logits(d["parity_logits"], parity_target, reduction="none")
+                    loss = (((unary + posterior)[known].mean() if bool(known.any()) else unary.sum() * 0.) +
+                            (parity.mean() if args.observation_recipe == "physical_mix" else
+                             parity[check_known].mean() if bool(check_known.any()) else parity.sum() * 0.))
                     losses.append(loss)
                     continue
                 if float(damage[t]) > 0.0:
@@ -274,14 +309,13 @@ def main() -> None:
         for t in range(args.clip_length):
             clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
             cor_tok = ct._split(cor_f[t:t + 1])["X_TIR"].detach()
-            mask = make_mask(boxes[t], damage[t])
             # No current annotation enters the state. Rebase the posterior before
             # prediction, then consume the window-penalised accepted head box.
             out = ct(F_L=cor_f[t:t + 1],
                      gt_box_xywh=None,
                      search_crop_params=crop_params[t:t + 1],
                      image_size=torch.tensor([[224., 224.]], device="cuda"),
-                     corruption_mask=mask, update_state=True,
+                     update_state=True,
                      preserve_state=(t > 0), observe_motion=False, eval_observe=True)
             repaired_head = ct.head(out["X_final"])
             base_head = ct.head(cor_tok)
@@ -299,15 +333,19 @@ def main() -> None:
             # The causal target is continuous.  Values just above zero are weak numerical
             # gains, not reliable evidence that a token should be rewritten; using a strict
             # impact threshold keeps the healthy identity set non-empty.
-            bad = causal >= 0.5
-            healthy = ~bad
+            trusted = trusted_by_name[name][t:t + 1]
+            bad = (causal >= 0.5) & trusted
+            healthy = (causal == 0.) & trusted
+            preservation_set = healthy | (~trusted) if args.observation_recipe == "physical_mix" else healthy
             drift = ((out["X_final"][healthy] - cor_tok[healthy]).square().mean()
                      if bool(healthy.any()) else out["X_final"].sum() * 0.0)
+            preservation = ((out["X_final"][preservation_set] - cor_tok[preservation_set]).square().mean()
+                            if bool(preservation_set.any()) else out["X_final"].sum() * 0.)
             if bool(bad.any()):
                 feature_gain = d_in[bad].mean() - d_out[bad].mean()
                 rec_loss = d_out[bad].mean()
-                q_loss = F.binary_cross_entropy_with_logits(
-                    out["q_logits"].float(), causal.float())
+                q_loss = (F.binary_cross_entropy_with_logits(out["q_logits"].float(), causal.float())
+                          if args.observation_recipe != "physical_mix" else out["q_logits"].sum() * 0.)
             else:
                 feature_gain = d_in.new_zeros(())
                 rec_loss = d_out.new_zeros(())
@@ -316,7 +354,7 @@ def main() -> None:
             # Real tracking loss decides whether the learned route is useful. The margin term
             # explicitly pushes harmful corrections back toward the identity path.
             loss = (track_repaired + 0.5 * F.relu(track_repaired - track_base.detach())
-                    + 0.2 * rec_loss + 1.0 * drift + 0.05 * q_loss)
+                    + 0.2 * rec_loss + 1.0 * preservation + 0.05 * q_loss)
             losses.append(loss)
             feature_gains.append(feature_gain.detach())
             tracking_gains.append(tracking_gain.detach())
@@ -332,18 +370,18 @@ def main() -> None:
         auc_scores, auc_labels = [], []
         channel_scores, parity_scores, parity_labels, oracle_scores, shuffled_scores = [], [], [], [], []
         per_clip, natural_tracks, synthetic_tracks, iou_values = [], [], [], []
+        direction_values, write_values, labelled_count, total_count = [], [], 0, 0
         for _name, clean_f, cor_f, boxes, damage, crop_params in items:
             ct.reset_sequence()
             gains, drifts, local_tracks, local_ious = [], [], [], []
             for t in range(args.clip_length):
                 clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
                 cor_tok = ct._split(cor_f[t:t + 1])["X_TIR"].detach()
-                mask = make_mask(boxes[t], damage[t])
                 out = ct(F_L=cor_f[t:t + 1],
                          gt_box_xywh=None,
                          search_crop_params=crop_params[t:t + 1],
                          image_size=torch.tensor([[224., 224.]], device="cuda"),
-                         corruption_mask=mask, update_state=True,
+                         update_state=True,
                          preserve_state=(t > 0), observe_motion=False,
                          eval_observe=True)
                 head_out = ct.head(out["X_final"])
@@ -371,8 +409,18 @@ def main() -> None:
                 d_in = (1 - F.cosine_similarity(cor_tok, clean_tok, dim=-1)).clamp(0, 2)
                 d_out = (1 - F.cosine_similarity(out["X_final"], clean_tok, dim=-1)).clamp(0, 2)
                 causal = causal_by_name[_name][t:t + 1].to(out["q"].device)
-                bad = causal >= 0.5
-                healthy = ~bad
+                trusted = trusted_by_name[_name][t:t + 1]
+                known = ((causal == 0.) | (causal >= .5)) & trusted
+                bad = (causal >= 0.5) & trusted
+                healthy = (causal == 0.) & trusted
+                residual = out["X_final"] - cor_tok
+                written = residual.norm(dim=-1) > 1e-7
+                write_values.append(float(written.float().mean()))
+                if bool((bad & written).any()):
+                    direction_values.append(float(F.cosine_similarity(
+                        residual[bad & written], (clean_tok - cor_tok)[bad & written], dim=-1).mean()))
+                labelled_count += int(known.sum())
+                total_count += known.numel()
                 if bool(bad.any()):
                     gains.append(float((d_in[bad].mean() - d_out[bad].mean()).detach()))
                 else:
@@ -380,25 +428,27 @@ def main() -> None:
                 drift = ((out["X_final"][healthy] - cor_tok[healthy]).square().mean()
                          if bool(healthy.any()) else out["X_final"].sum() * 0.0)
                 drifts.append(float(drift.detach()))
-                auc_scores.append(out["q"].detach().flatten())
-                auc_labels.append((causal >= 0.5).flatten())
+                auc_scores.append(out["q"].detach()[known].flatten())
+                auc_labels.append((causal >= 0.5)[known].flatten())
                 if out.get("channel_logits") is not None:
                     from codetrack.syndrome_bp import decode_error_syndrome
                     support = H > 0
                     bits = (causal >= .5).float()
                     parity_bits = torch.einsum("mn,bn->bm", support.float(), bits).remainder(2.)
-                    channel_scores.append(out["channel_logits"].sigmoid().flatten())
-                    parity_scores.append(out["parity_logits"].sigmoid().flatten())
-                    parity_labels.append(parity_bits.bool().flatten())
+                    check_known = torch.einsum("mn,bn->bm", support.float(), (~known).float()) == 0.
+                    channel_scores.append(out["channel_logits"].sigmoid()[known].flatten())
+                    parity_scores.append(out["parity_logits"].sigmoid()[check_known].flatten())
+                    parity_labels.append(parity_bits.bool()[check_known].flatten())
+                    oracle_likelihood = torch.where(check_known, (2. * parity_bits - 1.) * 12., torch.zeros_like(parity_bits))
                     oracle_scores.append(decode_error_syndrome(
-                        out["channel_logits"], support, (2. * parity_bits - 1.) * 12.)["q"].flatten())
+                        out["channel_logits"], support, oracle_likelihood)["q"][known].flatten())
                     shuffled_scores.append(decode_error_syndrome(
-                        out["channel_logits"], support, out["parity_logits"].roll(17, -1))["q"].flatten())
+                        out["channel_logits"], support, out["parity_logits"].roll(17, -1))["q"][known].flatten())
             values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
             per_clip.append({"clip": _name, "tracking_gain": sum(local_tracks) / len(local_tracks),
                              "selected_box_iou_gain": sum(local_ious) / len(local_ious)})
         mechanism = {}
-        if channel_scores:
+        if channel_scores and torch.cat(channel_scores).numel():
             truth = torch.cat(auc_labels).float()
             mechanism = {
                 "channel_auc": rank_auc(torch.cat(channel_scores), truth),
@@ -407,8 +457,8 @@ def main() -> None:
                 "parity_auc": rank_auc(torch.cat(parity_scores), torch.cat(parity_labels)),
                 "q_brier": float((torch.cat(auc_scores) - truth).square().mean()),
                 "channel_brier": float((torch.cat(channel_scores) - truth).square().mean()),
-                "parity_brier": float((torch.cat(parity_scores) - torch.cat(parity_labels).float()).square().mean()),
-                "constant_parity_brier": float((torch.cat(parity_labels).float() - torch.cat(parity_labels).float().mean()).square().mean())}
+                "parity_brier": float((torch.cat(parity_scores) - torch.cat(parity_labels).float()).square().mean()) if torch.cat(parity_labels).numel() else None,
+                "constant_parity_brier": float((torch.cat(parity_labels).float() - torch.cat(parity_labels).float().mean()).square().mean()) if torch.cat(parity_labels).numel() else None}
         return {"gain": sum(x[0] for x in values) / len(values),
                 "healthy_drift": sum(x[1] for x in values) / len(values),
                 "q_mean": sum(q_values) / len(q_values),
@@ -418,7 +468,10 @@ def main() -> None:
                 "natural_tracking_gain": sum(natural_tracks) / max(1, len(natural_tracks)),
                 "synthetic_tracking_gain": sum(synthetic_tracks) / max(1, len(synthetic_tracks)),
                 "selected_box_iou_gain": sum(iou_values) / max(1, len(iou_values)),
-                "per_clip": per_clip, "syndrome_mechanism": mechanism}
+                "per_clip": per_clip, "syndrome_mechanism": mechanism,
+                "repair_direction_cosine": sum(direction_values) / len(direction_values) if direction_values else None,
+                "actual_write_fraction": sum(write_values) / max(1, len(write_values)),
+                "q_labelled_fraction": labelled_count / max(1, total_count)}
 
     for step in range(args.steps):
         rows = [step_clip(*item) for item in train_cached]
@@ -464,6 +517,7 @@ def main() -> None:
         ct.H.H.data.copy_(best["state"]["H.H"].to(ct.H.H))
 
     learned_eval = evaluate_learned(val_cached)
+    native_eval = evaluate_learned(native_cached) if native_cached else None
     import os
     previous_ablation = os.environ.get("CODETRACK_ABLATE_MOTION")
     os.environ["CODETRACK_ABLATE_MOTION"] = "1"
@@ -483,6 +537,7 @@ def main() -> None:
               "validation_sequences": [x[0] for x in val_cached],
               "best_step": best["step"], "best_score": best["score"],
               "learned_eval": learned_eval, "motion_off_eval": motion_off_eval,
+              "native_eval": native_eval,
               "scope": "off-policy frozen-baseline crops; not candidate closed-loop PR/SR",
               "target_scope": "causal impact of paired synthetic faults; natural faults are not labelled",
               "train_eval": train_eval,

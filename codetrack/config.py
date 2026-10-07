@@ -49,6 +49,10 @@ class CodeTrackConfig:
     bp_damping: float = 0.5
     abstain_enabled: bool = False
     abstain_threshold: float = 0.5
+    # Use the same posterior, support and abstention rule in recovery training
+    # and inference. Two-stage fitting can freeze diagnosis instead of relaxing
+    # the student route or supplying augmentation labels as an oracle.
+    match_inference_route_training: bool = False
     # Inference-only reliability controls.  The learned frame gate reuses the template-trust
     # estimator; the geometric edge margin is a hard out-of-view safety constraint.  Both are
     # disabled by default so old checkpoints reproduce the original SATR path.

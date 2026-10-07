@@ -474,6 +474,8 @@ class CodeTrack(nn.Module):
         soft_route = bool(self.training and getattr(self.cfg, "soft_route_training", False))
         if os.environ.get("CODETRACK_SOFT_ROUTE", "0") == "1":
             soft_route = bool(self.training)
+        if self.cfg.match_inference_route_training:
+            soft_route = False
         route_k = q.shape[-1] if soft_route else min(
             int(os.environ.get("CODETRACK_TOPK_TOKENS", self.cfg.topk_tokens)), q.shape[-1])
         route_score = q
@@ -508,7 +510,7 @@ class CodeTrack(nn.Module):
             "CODETRACK_ABSTAIN_THRESHOLD") is not None
         abstain_threshold = float(os.environ.get(
             "CODETRACK_ABSTAIN_THRESHOLD", self.cfg.abstain_threshold))
-        if (not self.training) and abstain_enabled:
+        if (not self.training or self.cfg.match_inference_route_training) and abstain_enabled:
             route_support = route_support * (q >= abstain_threshold).to(q.dtype)
         adaptive_route = bool(getattr(self.cfg, "adaptive_route_enabled", False)) or \
             os.environ.get("CODETRACK_ADAPTIVE_ROUTE", "0") == "1"
@@ -577,7 +579,9 @@ class CodeTrack(nn.Module):
                 base_peak_for_route >= float(response_threshold)).to(q.dtype).unsqueeze(-1)
         # Soft training uses calibrated probabilities directly.  Relative standardisation is
         # useful for a fixed inference budget but destroys absolute q semantics during fitting.
-        if soft_route:
+        if self.cfg.match_inference_route_training:
+            q_route = q * route_support
+        elif soft_route:
             # The configured detection prior is the no-error operating point.  During fitting,
             # routing the raw q would write a nonzero residual into every token at initialization
             # (q starts at the prior, usually 0.2).  A quadratic soft gate keeps that path close
