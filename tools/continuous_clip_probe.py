@@ -382,7 +382,9 @@ def main() -> None:
                     gains.append(float((d_in[bad].mean() - d_out[bad].mean()).detach()))
                 else:
                     gains.append(0.0)
-                drifts.append(float((out["X_final"][healthy] - cor_tok[healthy]).square().mean().detach()))
+                drift = ((out["X_final"][healthy] - cor_tok[healthy]).square().mean()
+                         if bool(healthy.any()) else out["X_final"].sum() * 0.0)
+                drifts.append(float(drift.detach()))
                 auc_scores.append(out["q"].detach().flatten())
                 auc_labels.append((causal >= 0.5).flatten())
             values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
