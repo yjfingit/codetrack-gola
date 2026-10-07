@@ -18,6 +18,7 @@ identify the exact config, checkpoint, and log used.
 | E0009 | Legacy continuous-clip SATR probes | 10 LasHeR-train clips, length 4 | n/a | n/a | feature diagnostics only; oracle q used for SATR training | not evidence of learned correction timing | [record](E0009-legacy-clip-probes.md) |
 | E0010 | Causal clip recipe: soft training route, frozen q during SATR, residual trust-region clip | 10 LasHeR-train clips, length 4, 1 seed | n/a | n/a | learned-route feature gain -0.0000013; healthy drift 0.000115 | diagnostic pass for stability, not a tracking result; no full evaluation | [record](E0010-causal-soft-trust.md) |
 | E0011 | Same recipe with strict 7/3 sequence holdout and validation checkpoint selection | 7 train + 3 unseen LasHeR-train clips, length 4, 1 seed | n/a | n/a | held-out q-AUROC 0.876; bad-token recovery +0.00038; tracking-loss gain +0.0625; healthy drift 0.000180 | retain as first promising training recipe; needs split/seed confirmation | [record](E0011-causal-holdout.md) |
+| E0012 | E0011 repeated with seed 43 | same 7/3 holdout, length 4 | n/a | n/a | held-out q-AUROC 0.853; bad-token recovery +0.000372; tracking-loss gain +0.0553; healthy drift 0.000180 | retain; proceed to 10-clip head comparison | [record](E0012-causal-holdout-seed43.md) |
 
 ## Current Read
 
