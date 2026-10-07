@@ -11,6 +11,7 @@ source scripts/00_env.sh
 
 SEQ="${SEQ:-10runone}"
 CONFIG="${CONFIG:-codetrack_eval}"
+MIXIN_CONFIG="${MIXIN_CONFIG:-}"
 VIEW="$PWD/data/LasHeR_single"
 OUT="${OUT:-$PWD/outputs/codetrack_eval_$SEQ}"
 CONSTS="$PWD/consts.yaml"
@@ -51,10 +52,16 @@ else
   echo "[init] using the pretrained GOLA checkpoint $WEIGHT"
 fi
 
+MIXIN_ARGS=()
+if [[ -n "$MIXIN_CONFIG" ]]; then
+  MIXIN_ARGS+=(--mixin_config "$MIXIN_CONFIG")
+fi
+
 "$PYTHON" main.py GOLA "$CONFIG" \
   --eval \
   --distributed_nproc_per_node 1 \
   --device cuda \
   --disable_wandb \
+  "${MIXIN_ARGS[@]}" \
   "${WEIGHT_ARG[@]}" \
   --output_dir="$OUT"
