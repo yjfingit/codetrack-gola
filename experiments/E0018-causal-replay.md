@@ -13,7 +13,9 @@
 - GPU: dynamically query before each launch; use only idle GPU4 at preparation (the other seven cards have external jobs or allocations).
 - Outputs: `_probe/E0018/{baseline,gt_centered}.{json,safetensors,log}` and per-frame `.trajectory.json` crop provenance. Large files remain outside Git.
 - Promotion gate: positive held-out tracking and selected-box IoU gains, bounded healthy drift, no large clip failures; then run actual closed-loop LasHeR-train validation. This cache is off-policy and never counts as PR/SR. Negative results reject the recipe; no seed or threshold sweep follows.
-- PR/SR / checkpoint / conclusion: pending.
+- Causal arm completed at `58b1b2a`: best validation checkpoint is step 0. Held-out q-AUROC 0.62414, tracking-loss gain **-0.00007460**, selected-box IoU gain **-0.00014762**, healthy drift 1.90e-7. Motion-off loss gain is -0.00007522; the difference is too small to establish useful motion correction. At step 50 training improves by 0.02905 while validation worsens by 0.002279 and IoU falls by 0.005449. Reject this recipe for further scale-up; no seed/threshold sweep.
+- Diagnostic checkpoint: `_probe/E0018/baseline.safetensors`, 53 persisted tensors including H/template pool. It is not a final tracker or the project's best checkpoint.
+- PR/SR: not evaluated; this is off-policy feature evidence. The matched GT-centred control is still pending and will determine how much of the failure comes from crop policy.
 - First launch source: `67ed7ac`, GPU4 PID 3411599. Terminal log: `_probe/E0018/baseline_attempt1.log`. Failure: AUROC helper imported unavailable `sklearn`; no selected checkpoint exists. Replaced it with tie-aware rank AUROC in PyTorch. A 12-trial identical-token witness with the actual pretrained head passed (zero false positive labels; head batch differences up to 9.54e-7). Explicit no-op masking now makes this invariant independent of batch-kernel numerics. The retry also reports unedited-frame label density.
 
 ```bash
