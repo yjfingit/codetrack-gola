@@ -36,7 +36,7 @@ CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
            h_free_edge_frac=0.25, syndrome_hidden=128,
            topk_tokens=32, num_neighbours=8, refiner_hidden=256, refiner_heads=4,
            residual_gate_init=-8.0, motion_bias_scale=0.5,
-           diffusion_enabled=True, diffusion_steps=2, diffusion_hidden=256,
+
            motion_enabled=True, memory_enabled=True, memory_frames=3,
            memory_tokens=8, memory_dim=128, template_protection=True)
 

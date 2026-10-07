@@ -78,8 +78,8 @@ class CodeTrackConfig:
     refiner_hidden: int = 256             # 768 -> 256 -> 768
     refiner_heads: int = 4
     refiner_dropout: float = 0.0
-    # Residual-gate bias for both the refiner and the denoiser.  The correction is written
-    # back as ``sigmoid(gate) * delta``, so this single scalar controls BOTH how close
+    # Residual-gate bias for the Tanner refiner.  The correction is written
+    # back as ``sigmoid(gate) * delta``, so this single scalar controls how close
     # stage 0 is to the GOLA baseline and how much gradient reaches the upstream branches.
     # A gate at -8 attenuates gradients by ~1500x relative to 0.  Small nonzero output
     # weights now control initial correction size; start the trainable gate at sigmoid(0)=0.5.
@@ -95,7 +95,7 @@ class CodeTrackConfig:
     # attention at all.  False reproduces the pre-2026-10-04 numerics exactly.
     motion_bias_normalise: bool = True
     # Init std of the residual predictor's output layer inside BOTH the refiner and the
-    # denoiser.  Replaces the old "large negative residual gate" idiom: a small nonzero
+    # refiner. Replaces the old "large negative residual gate" idiom: a small nonzero
     # ``up`` keeps step-0 output near identity while leaving the conditioning paths their
     # gradient.  See codetrack/recovery.py for the measurements behind this.
     up_init_std: float = 0.005

@@ -16,8 +16,7 @@ Wiring, exactly as the figure:
         |
         +-- (3) ECC diagnosis   X_t, X_aux -> H_bar -> s (B,64) -> q (B,256)
         |
-        +-- (5) Selective recovery  TopK(q) -> H-routed sparse attention -> X''
-        |       then noise-modulated 2-step denoising -> X_t'
+        +-- (5) Selective recovery  TopK(q) -> Tanner recovery rounds -> X_t'
         |
         +-- (6) Template protection  c_t gates the score>0.84 rule
         v
@@ -673,7 +672,6 @@ class CodeTrack(nn.Module):
         # denoiser or diffusion rewrite follows the correction.
         suspect = rec["suspect_index"]
         X_final = X_rec
-        den = {"X_denoised": X_final, "step_preds": []}
         mv = None
 
         # Post-decode parity evidence.  This is the visual analogue of checking whether a
@@ -748,7 +746,7 @@ class CodeTrack(nn.Module):
                 }
 
         # ---- D2: absorb this frame's observation LAST ---------------------------
-        # Everything above (the prior map, the recovery routing, the denoiser, the gate) has
+        # Everything above (the prior map, the recovery routing and the gate) has
         # already consumed x_{t|t-1}.  Updating the filter now leaves the state at x_{t|t} so
         # the *next* frame predicts from a posterior that includes this frame -- the correct
         # causal ordering.  ``pending_conf`` is the observation confidence, which inflates the
@@ -784,6 +782,5 @@ class CodeTrack(nn.Module):
             "motion_target": motion_target,
             "preserve": preserve,
             "token_accept_mask": token_accept_mask,
-            "denoise_steps": den["step_preds"],
             **gate_out,
         }

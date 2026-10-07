@@ -51,7 +51,7 @@ WEIGHT = os.path.join(ROOT, "weights/gola_b224.bin")
 
 BASE_CFG = dict(enabled=True, z_len=64, x_len=256, dim=768, grid=16, mid_dim=128,
                 num_checks=64, h_links_per_check=12, h_min_col_degree=3, h_locality_window=5,
-                topk_tokens=32, num_neighbours=8, refiner_hidden=256, diffusion_steps=2,
+                topk_tokens=32, num_neighbours=8, refiner_hidden=256,
                 motion_enabled=False, memory_enabled=False, template_protection=False)
 
 # Metrics reported per milestone, in print order.

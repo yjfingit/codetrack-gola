@@ -37,7 +37,7 @@ memory_frames: 3
 memory_tokens: 8
 memory_dim: 128
 
-# block 5 -- selective recovery + noising-denoising correction
+# block 5 -- selective Tanner recovery
 topk_tokens: 32          # K_max, 12.5% of N
 num_neighbours: 8        # K_n
 refiner_hidden: 256      # 768 -> 256 -> 768

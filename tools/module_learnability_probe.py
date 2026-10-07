@@ -32,10 +32,7 @@ MODULES = (
     ("template_pool", "template_pool."),
     ("motion_prior", "motion."),
     ("temporal_memory", "memory."),
-    ("sparse_refiner", "refiner."),
-    ("condition_projection", "condition_proj."),
-    ("denoiser", "denoiser."),
-    ("meanvar_completion", "meanvar."),
+    ("sparse_refiner", "satr."),
     ("template_gate", "template_gate."),
 )
 
@@ -87,15 +84,6 @@ def _expected_shape_ok(name: str, captured: list[Any], model) -> bool:
     if name == "sparse_refiner":
         return (tuple(value["X_rec"].shape) == (2, 256, 768)
                 and tuple(value["delta"].shape) == (2, 32, 768))
-    if name == "condition_projection":
-        return all(tensor.shape[-1] == 768 for item in captured for tensor in _tensor_leaves(item))
-    if name == "denoiser":
-        return (tuple(value["X_denoised"].shape) == (2, 256, 768)
-                and len(value["step_preds"]) == 2
-                and all(tuple(item.shape) == (2, 256, 768) for item in value["step_preds"]))
-    if name == "meanvar_completion":
-        return (tuple(value["pred_mean"].shape) == (2, 768)
-                and tuple(value["pred_logvar"].shape) == (2, 768))
     if name == "template_gate":
         return tuple(value["c_t"].shape) == (2,)
     return False
@@ -107,10 +95,7 @@ def _module_for(name: str, model):
         "template_pool": model.codetrack.template_pool,
         "motion_prior": model.codetrack.motion,
         "temporal_memory": model.codetrack.memory,
-        "sparse_refiner": model.codetrack.refiner,
-        "condition_projection": model.codetrack.condition_proj,
-        "denoiser": model.codetrack.denoiser,
-        "meanvar_completion": model.codetrack.meanvar,
+        "sparse_refiner": model.codetrack.satr,
         "template_gate": model.codetrack.template_gate,
     }.get(name)
 
