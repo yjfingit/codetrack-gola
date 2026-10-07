@@ -22,6 +22,7 @@ def main():
     ap.add_argument('--events-per-sequence', type=int, default=8)
     ap.add_argument('--clip-length', type=int, default=8)
     ap.add_argument('--decoder-checkpoint', type=Path)
+    ap.add_argument('--decoder-ablation', choices=('none', 'unary', 'shuffled'), default='none')
     args = ap.parse_args()
     if args.workers < 0 or args.prefetch < 1 or args.clip_length < 4:
         ap.error('invalid producer or clip settings')
@@ -37,7 +38,8 @@ def main():
     torch.manual_seed(42); torch.cuda.manual_seed_all(42)
     torch.set_num_threads(4)
     args.output.mkdir(parents=True, exist_ok=True)
-    tracker = ObservedGOLATracker(ROOT, decoder_checkpoint=args.decoder_checkpoint)
+    tracker = ObservedGOLATracker(ROOT, decoder_checkpoint=args.decoder_checkpoint,
+                                decoder_ablation=args.decoder_ablation)
     names = args.sequences.read_text().splitlines()
     records, sequence_metrics = [], []
 

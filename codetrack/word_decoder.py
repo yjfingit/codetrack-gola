@@ -17,6 +17,7 @@ class NativeWordDecoder(nn.Module):
     def __init__(self, dim=768, mid=48, hidden=128, grid=16, rounds=3):
         super().__init__()
         self.grid, self.rounds = grid, rounds
+        self.ablation = 'none'
         n = grid * grid
         support = build_sparse_support(n, n, 4, 4, grid, layout='binary_cycles').bool()
         self.register_buffer('support', support)
@@ -52,7 +53,11 @@ class NativeWordDecoder(nn.Module):
             log_prior[..., None], unc[..., None]], -1)).squeeze(-1) + self.channel_prior
         evidence = torch.cat([diff, diff.abs()], -1)
         syndrome_logits = self.parity(evidence[:, self.check_indices].flatten(2)).squeeze(-1)
-        decoded = decode_error_syndrome(channel_logits, self.support, syndrome_logits, self.rounds)
+        if self.ablation == 'unary':
+            decoded = {'q': channel_logits.sigmoid(), 'q_logits': channel_logits}
+        else:
+            likelihood = syndrome_logits.roll(17, -1) if self.ablation == 'shuffled' else syndrome_logits
+            decoded = decode_error_syndrome(channel_logits, self.support, likelihood, self.rounds)
         pooled = torch.cat([diff.mean(1), diff.abs().mean(1), diff.amax(1), diff.amin(1),
                             word_statistics, ctx, motion], -1)
         quality_logits = self.word_quality(pooled).squeeze(-1)

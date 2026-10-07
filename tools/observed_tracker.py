@@ -55,7 +55,7 @@ def ordered_images(files, count, workers=4, prefetch=8):
 
 
 class ObservedGOLATracker:
-    def __init__(self, root: Path, amp=True, decoder_checkpoint=None):
+    def __init__(self, root: Path, amp=True, decoder_checkpoint=None, decoder_ablation='none'):
         cfg = load_stage_config(str(root / 'config/GOLA/codetrack_s1/config.yaml'))
         cfg['model']['codetrack']['enabled'] = False
         self.model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
@@ -67,6 +67,7 @@ class ObservedGOLATracker:
             from codetrack.word_decoder import NativeWordDecoder
             self.decoder = NativeWordDecoder().cuda().eval()
             self.decoder.load_state_dict(load_file(str(decoder_checkpoint)), strict=True)
+            self.decoder.ablation = decoder_ablation
         self.normalize = get_dataset_norm_stats_transform('mm', inplace=True)
         self.post = PostProcessing_BoxWithScoreMap(torch.device('cuda'), (16, 16), (224, 224), .45)
         self.post.start()
