@@ -129,8 +129,11 @@ def main():
         healthy = ~positive
         recovery = ((1-F.cosine_similarity(out['reconstructed'][positive], data['reference_ir'][positive], dim=-1)).mean()
                     if bool(positive.any()) else tracking.sum()*0.)
-        preservation = (out['reconstructed'][healthy]-data['current_ir'][healthy]).square().mean()
+        preservation = ((out['reconstructed'][healthy]-data['current_ir'][healthy]).square().mean()
+                        if bool(healthy.any()) else tracking.sum()*0.)
         loss = detection + tracking.mean() + .5*F.relu(tracking-original).mean() + .2*recovery + preservation
+        if not bool(torch.isfinite(loss)):
+            raise RuntimeError(f'nonfinite native-word objective at update {step}')
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)

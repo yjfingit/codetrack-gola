@@ -12,6 +12,7 @@
 - Split: first seven complete native train10 sequences fit; last three sequences select checkpoint and validate. No LasHeR-test use. Cached native representation metrics remain a pilot; passing decoder needs a live ordered image/bank/template/motion rollout.
 - Gate: held-out word selection and real selected-box improvement with healthy/unknown preservation. Then compare learned BP against unary/shuffled/oracle; only promote to live validation after useful native improvement. Do not call an oracle result or identity-only checkpoint a final tracker.
 - Status/checkpoint/PR/SR: prepared.
+- Export completed at `651e73a`: **149 real native frames** (72 failure endpoints plus 77 actual good context controls); 66 have a qualified same-crop target. Control banks use strictly earlier observations. All offered words and their negative alternatives are exported; the student receives no GT-selected reference.
 
 ```bash
 source scripts/00_env.sh
