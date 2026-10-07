@@ -55,13 +55,18 @@ def ordered_images(files, count, workers=4, prefetch=8):
 
 
 class ObservedGOLATracker:
-    def __init__(self, root: Path, amp=True):
+    def __init__(self, root: Path, amp=True, decoder_checkpoint=None):
         cfg = load_stage_config(str(root / 'config/GOLA/codetrack_s1/config.yaml'))
         cfg['model']['codetrack']['enabled'] = False
         self.model = build_GOLA_model(cfg, ModelImplSuggestions()).cuda().eval()
         self.model.load_state_dict(load_file(str(root / 'weights/gola_b224.bin')), strict=False)
         self.model.requires_grad_(False)
         self.amp = amp
+        self.decoder = None
+        if decoder_checkpoint is not None:
+            from codetrack.word_decoder import NativeWordDecoder
+            self.decoder = NativeWordDecoder().cuda().eval()
+            self.decoder.load_state_dict(load_file(str(decoder_checkpoint)), strict=True)
         self.normalize = get_dataset_norm_stats_transform('mm', inplace=True)
         self.post = PostProcessing_BoxWithScoreMap(torch.device('cuda'), (16, 16), (224, 224), .45)
         self.post.start()
@@ -99,12 +104,22 @@ class ObservedGOLATracker:
         bb = image.new_tensor(initial_box)[None]
         cxcywh = torch.cat([(bb[:, :2] + bb[:, 2:]) * .5, bb[:, 2:] - bb[:, :2]], -1)
         self.motion.observe(cxcywh, size)
+        self.frame_index = 0
+        self.history = deque(maxlen=3)
+        self.initial_image = image.detach().cpu().byte()
+        self.initial_box = np.asarray(initial_box).copy()
+        if self.decoder is not None:
+            _, anchor = self.initialization_reference(image)
+            fused = anchor['F_L'].cuda().float()
+            mask = self.zm.flatten().bool()
+            self.identity = .5 * (fused[0, :64][mask].mean(0) + fused[0, 320:384][mask].mean(0))
 
     @torch.no_grad()
     def track(self, image, capture=False):
         params = self.provider.get(np.array((224, 224)))
         x, _, actual = apply_siamfc_cropping(image, np.array((224, 224)), params,
                                            'bilinear', False, self.mean)
+        raw_crop = x
         x = self.normalize(x.div(255.))[None]
         d, dm_before = self.updater.get(0)[None], self.dm.clone()
         size = image.new_tensor([[image.shape[-1], image.shape[-2]]])
@@ -114,6 +129,11 @@ class ObservedGOLATracker:
             out = self.model(z=self.z, x=x, d=d, z_feat_mask=self.zm, d_feat_mask=dm_before)
         if self.fused is None or self.fused.shape != (1, 768, 768):
             raise RuntimeError('normal-backbone fused-token capture failed')
+        receiver = self.fused.detach().clone()
+        correction_info = None
+        if self.decoder is not None:
+            out, correction_info = self._decode_native_words(image, raw_crop, actual, d, dm_before,
+                                                            motion, receiver, out)
         decoded = self.post(out)
         pred = decoded['box'][0].cpu().double().numpy()
         pred = apply_siamfc_cropping_to_boxes(pred, reverse_siamfc_cropping_params(actual))
@@ -121,20 +141,93 @@ class ObservedGOLATracker:
         confidence = float(decoded['confidence'][0])
         snapshot = None
         if capture:
-            snapshot = {'F_L': self.fused.detach().cpu().clone(),
+            snapshot = {'F_L': receiver.detach().cpu().clone(),
                         'z': self.z.detach().cpu().clone(), 'd': d.detach().cpu().clone(),
                         'z_mask': self.zm.detach().cpu().clone(), 'd_mask': dm_before.cpu(),
                         'motion_posterior_x': motion_x.cpu(), 'motion_posterior_P': motion_p.cpu()}
         self.provider.update(confidence, pred, np.array([image.shape[-1], image.shape[-2]]))
-        self.updater.update(0, confidence, image, pred)
-        if confidence > .84:
+        # A repaired frame is not evidence that its raw sensor/template is healthy.
+        # Preserve online-template state until a directly reliable observation arrives.
+        repaired = correction_info is not None and correction_info['written_tokens'] > 0
+        if not repaired:
+            self.updater.update(0, confidence, image, pred)
+        if confidence > .84 and not repaired:
             self.dm = self._mask(pred, get_siamfc_cropping_params(pred, 2., np.array((112, 112))))
+            if self.decoder is not None:
+                self.history.append({'image': image.detach().cpu().byte(), 'bbox': pred.copy(),
+                                     'confidence': confidence, 'frame': self.frame_index + 1})
+        self.frame_index += 1
         bb = image.new_tensor(pred)[None]
         self.motion.observe(torch.cat([(bb[:, :2] + bb[:, 2:]) * .5, bb[:, 2:] - bb[:, :2]], -1),
                             size, confidence=image.new_tensor([confidence]), predict=False)
         return {'box': pred, 'confidence': confidence, 'crop_params': actual,
                 'motion_prediction_xywh': motion['motion_box'][0].cpu().tolist(),
-                'motion_uncertainty': float(motion['uncertainty'][0]), 'snapshot': snapshot}
+                'motion_uncertainty': float(motion['uncertainty'][0]), 'snapshot': snapshot,
+                'correction': correction_info}
+
+    @torch.no_grad()
+    def _decode_native_words(self, image, raw, params, d, dm, motion, receiver, original_out):
+        mp = motion['motion_box'][0].cpu().double().numpy()
+        centre = mp[:2] + .5 * mp[2:]
+        prior_wh = np.maximum(mp[2:], 1.)
+        current = self.post(original_out)
+        current_box = apply_siamfc_cropping_to_boxes(
+            current['box'][0].cpu().double().numpy(), reverse_siamfc_cropping_params(params))
+        current_centre = .5 * (current_box[:2] + current_box[2:])
+        history = [{'image': self.initial_image, 'bbox': self.initial_box,
+                    'confidence': 1., 'frame': 0}] + list(self.history)
+        words, statistics = [], []
+        for record in history:
+            old = record['image'].cuda(non_blocking=record['image'].is_pinned()).float()
+            bb = record['bbox']; size = np.maximum(bb[2:] - bb[:2], 1.)
+            scale = prior_wh / size
+            shift = centre - scale * .5 * (bb[:2] + bb[2:])
+            warp = np.stack([params[0] * scale, params[0] * shift + params[1]])
+            warped, _, _ = apply_siamfc_cropping(old, np.array((224, 224)), warp,
+                                               'bilinear', False, old.mean((-2, -1)))
+            for rgb in (True, False):
+                hybrid = raw.clone()
+                channels = slice(0, 3) if rgb else slice(3, 6)
+                hybrid[channels] = warped[channels]
+                for initial_template in (False, True):
+                    online, mask = (self.z, self.zm) if initial_template else (d, dm)
+                    x = self.normalize(hybrid.div(255.))[None]
+                    with torch.autocast('cuda', dtype=torch.float16, enabled=self.amp):
+                        candidate_out = self.model(z=self.z, x=x, d=online,
+                                                   z_feat_mask=self.zm, d_feat_mask=mask)
+                    word = self.fused[:, 384:640].float().clone()
+                    decoded = self.post(candidate_out)
+                    box = apply_siamfc_cropping_to_boxes(decoded['box'][0].cpu().double().numpy(),
+                                                        reverse_siamfc_cropping_params(params))
+                    bbox_clip_to_image_boundary_(box, np.array([image.shape[-1], image.shape[-2]]))
+                    wc = .5 * (box[:2]+box[2:]); wh = np.maximum(box[2:]-box[:2], 1.)
+                    statistics.append([float(decoded['confidence'][0]), float(current['confidence'][0]),
+                                       *((wc-centre)/prior_wh).tolist(), *np.log(wh/prior_wh).tolist(),
+                                       *((wc-current_centre)/prior_wh).tolist(), float(motion['uncertainty'][0]),
+                                       float(rgb), float(initial_template), 0.])
+                    words.append(word[0])
+        references = torch.stack(words)
+        count = len(words)
+        crop_box = apply_siamfc_cropping_to_boxes(np.array([mp[0],mp[1],mp[0]+mp[2],mp[1]+mp[3]]), params)
+        descriptor = receiver.new_tensor([*((crop_box[:2]+crop_box[2:])*.5/224.).tolist(),
+                                           *((crop_box[2:]-crop_box[:2])/224.).tolist(),
+                                           float(motion['uncertainty'][0])])
+        result = self.decoder(current_ir=receiver[:,384:640].float().expand(count,-1,-1),
+                              reference_ir=references,
+                              current_rgb=receiver[:,64:320].float().expand(count,-1,-1),
+                              identity=self.identity[None].expand(count,-1),
+                              motion=descriptor[None].expand(count,-1),
+                              word_statistics=receiver.new_tensor(statistics))
+        choice = int(result['word_quality'].argmax())
+        written = int(result['accept'][choice].sum())
+        if written:
+            with torch.autocast('cuda', dtype=torch.float16, enabled=self.amp):
+                final_out = self.model.head(result['reconstructed'][choice:choice+1])
+        else:
+            # Return the original AMP head result byte-for-byte on an erasure.
+            final_out = original_out
+        return final_out, {'word_quality': float(result['word_quality'][choice]),
+                           'written_tokens': written, 'offered_words': count}
 
     @torch.no_grad()
     def initialization_reference(self, image):

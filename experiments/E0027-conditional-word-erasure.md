@@ -8,6 +8,7 @@
 - Witness: two .6 scores jointly authorize no change (.36 < .5); uncertain words preserve receiver exactly, accepted symbols copy actual offered word exactly, training/deployment forward is identical, and tracking gradients exist. Four CPU witnesses pass.
 - Training: single stage, 200 updates, batch 32, lr 5e-4, seed 42. Source commit captured before launch.
 - Gate: improve held-out native selection with calibrated joint evidence and refuse unrepairable/unknown frames before live closed-loop validation. No cached gain counts as final PR/SR.
+- Pilot completed at `804f7e9`: best update 100, 44 held-out native frames, mean selected-box IoU gain **+.019808**, three improved and zero regressed; seven frames write. Word Brier .17062. The unqualified-reference conditional bit Brier must not be treated as a calibrated error score. Several unrepairable words still get false writes; this candidate has not passed final refusal/calibration gates. E0028 checks live state amplification on a short complete held-out sequence.
 
 ```bash
 source scripts/00_env.sh

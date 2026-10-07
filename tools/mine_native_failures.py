@@ -21,6 +21,7 @@ def main():
     ap.add_argument('--max-frames', type=int, default=0, help='bounded smoke only; zero means whole sequence')
     ap.add_argument('--events-per-sequence', type=int, default=8)
     ap.add_argument('--clip-length', type=int, default=8)
+    ap.add_argument('--decoder-checkpoint', type=Path)
     args = ap.parse_args()
     if args.workers < 0 or args.prefetch < 1 or args.clip_length < 4:
         ap.error('invalid producer or clip settings')
@@ -36,7 +37,7 @@ def main():
     torch.manual_seed(42); torch.cuda.manual_seed_all(42)
     torch.set_num_threads(4)
     args.output.mkdir(parents=True, exist_ok=True)
-    tracker = ObservedGOLATracker(ROOT)
+    tracker = ObservedGOLATracker(ROOT, decoder_checkpoint=args.decoder_checkpoint)
     names = args.sequences.read_text().splitlines()
     records, sequence_metrics = [], []
 
@@ -107,7 +108,7 @@ def main():
                 preds.append(annotation.copy()); times.append(time.monotonic() - tick)
                 continue
             # Current annotation is evaluated only after this image-only tracking call.
-            out = tracker.track(image, capture=True)
+            out = tracker.track(image, capture=(len(events) < args.events_per_sequence))
             preds.append(out['box']); times.append(time.monotonic() - tick)
             pred_xywh = out['box'].copy(); pred_xywh[2:] -= pred_xywh[:2]
             valid = bool((boxes[frame, 2:] > 0).all())
@@ -118,6 +119,7 @@ def main():
                    'crop_params': out['crop_params'].tolist(),
                    'motion_prediction_xywh': out['motion_prediction_xywh'],
                    'motion_uncertainty': out['motion_uncertainty']}
+            row['correction'] = out.get('correction')
             sample = {'row': row, 'tensors': out['snapshot']}
             recent.append(sample); frame_rows.append(row)
             hard = (not valid) or iou < .5
@@ -166,7 +168,7 @@ def main():
         print(json.dumps({k: v for k, v in record.items() if k != 'events'}), flush=True)
     tracker.close()
     mean = compute_OPE_metrics_mean(sequence_metrics)
-    report = {'protocol': 'ordered native LasHeR-train closed-loop frozen GOLA mining',
+    report = {'protocol': 'ordered native LasHeR-train closed-loop frozen GOLA evaluation/mining',
               'no_augmentation': True, 'current_gt_model_input': False,
               'scope': 'train research / target discovery, not LasHeR-test',
               'PR': mean.precision_score, 'SR': mean.success_score, 'sequences': records,
