@@ -11,6 +11,8 @@
 - Decision: if a target family has useful native coverage and oracle recovery gains, train a reliability/syndrome decision around that available word and validate native closed-loop transfer. If it fails, do not spend another recovery training allocation on it.
 - Metrics/checkpoint: reference coverage, actual selected IoU, GT tracking loss, oracle error-bit recovery; no candidate PR/SR or trained checkpoint is claimed at this discovery stage.
 - Outputs: `_probe/E0025/{template,temporal}/report.json` and qualified native target tensors. Frozen GOLA weights remain the only model checkpoint.
+- First discovery run at `ab87581` found apparent target coverage, but **is not accepted as evidence**: some re-encoded observations differ from the recorded native tensors by up to 4.224. The pixel-aligned cropper's returned affine is not generally a safe repeat request because integer rasterisation rounds again. Replay must reconstruct the original requested crop from the preceding recorded prediction. The corrected run asserts the adjusted geometry is identical and maximum fused difference <= .01 before evaluating targets.
+- The corrected run also compares the inherited frame-max-relative labels with all numerically significant positive task gains. The frozen GOLA head is pointwise and fixed-GT classification/box loss is additive; verify this decomposition numerically. A native token with a useful box correction must not be discarded just because another background token has a larger classification gain.
 
 ```bash
 source scripts/00_env.sh

@@ -30,7 +30,9 @@ def main():
     from trackit.core.operator.numpy.bbox.utility.image import bbox_clip_to_image_boundary_
     from trackit.data.methods.siamese_tracker_train.transform.default.plugin.box_with_score_map_label_gen import positive_sample_assignment
     from trackit.data.components.result_collector.handler.one_pass_evaluation_compatible.ope_metrics import calc_iou_overlap
-    from codetrack.criteria import _tracking_loss
+    from codetrack.criteria import _tracking_loss, giou_loss
+    from trackit.runner.evaluation.common.siamfc_search_region_cropping_params_provider.simple import SiamFCCroppingParameterSimpleProvider
+    import torch.nn.functional as F
 
     torch.manual_seed(42); torch.cuda.manual_seed_all(42); torch.set_num_threads(4)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -40,6 +42,7 @@ def main():
         paths = paths[:args.limit]
     results = []
     file_lists = {}
+    traces = {}
 
     def read(sequence, frame):
         if sequence not in file_lists:
@@ -67,10 +70,20 @@ def main():
         dm = pack[prefix + 'd_mask'].cuda().long()
         received = pack[prefix + 'F_L'].cuda().float()
         params = np.asarray(row['crop_params'])
+        trace_path = path.parent / (path.name.split('_event')[0] + '_trace.json')
+        if trace_path not in traces:
+            traces[trace_path] = {r['frame']: r for r in json.loads(trace_path.read_text())}
+        previous = (traces[trace_path][row['frame'] - 1]['bbox'] if row['frame'] > 1
+                    else event['history'][0]['bbox'])
+        crop_provider = SiamFCCroppingParameterSimpleProvider(4., 10.)
+        crop_provider.initialize(np.asarray(previous))
+        requested_params = crop_provider.get(np.array((224, 224)))
         image = read(event['sequence'], row['frame'])
         initial = read(event['sequence'], 0)
         mean = initial.mean((-2, -1))
-        raw, _, actual = apply_siamfc_cropping(image, np.array((224, 224)), params, 'bilinear', False, mean)
+        raw, _, actual = apply_siamfc_cropping(image, np.array((224, 224)), requested_params, 'bilinear', False, mean)
+        if not np.array_equal(actual, params):
+            raise RuntimeError('reconstructed requested crop does not reproduce recorded geometry')
         truth = np.asarray(row['gt_bbox'])
         gt_crop = apply_siamfc_cropping_to_boxes(truth, params)
         clipped = gt_crop.clip(0., 224.)
@@ -100,6 +113,8 @@ def main():
         baseline, base_tok, base_head = evaluate_word(received, params)
         reproduced, _ = encode(raw.clone(), z, d, zm, dm)
         difference = float((reproduced.float() - received).abs().max())
+        if difference > .01:
+            raise RuntimeError(f'native observation replay mismatch: max fused difference {difference}')
         candidates = []
         if args.mode == 'template':
             word, _ = encode(raw.clone(), z, z, zm, zm)
@@ -151,8 +166,32 @@ def main():
                       'strong_bad_fraction': float(bits.float().mean()),
                       'oracle_selected_iou': oracle_stats['iou'],
                       'oracle_tracking_loss_gain': baseline['loss'] - oracle_stats['loss']}
+            # The GOLA head is pointwise. Fixed quality labels make the exact
+            # task loss additive across tokens, so compute every signed repair
+            # gain without frame-relative max normalisation or batch-kernel noise.
+            def point_losses(head):
+                loss = F.binary_cross_entropy_with_logits(head['score_map'].float(),
+                                                          target['score_quality_map'], reduction='none').flatten(1)
+                indices = target['positive_sample_map_dim_indices']
+                if indices.numel():
+                    predicted = head['boxes'].reshape(1, 256, 4)[0, indices]
+                    truth_boxes = target['boxes'].expand(len(pos), -1)
+                    loss[0, indices] += giou_loss(predicted, truth_boxes)
+                return loss / max(1, len(pos))
+            gains = point_losses(base_head) - point_losses(reference_head)
+            if abs(float(gains.sum()) - (baseline['loss'] - best_stats['loss'])) > 1e-3:
+                raise RuntimeError('pointwise native loss decomposition disagrees with full tracking loss')
+            numerical_floor = 8. * torch.finfo(torch.float32).eps * (1. + abs(baseline['loss']))
+            positive_bits = gains > max(1e-6, numerical_floor)
+            positive_fused = received.clone()
+            positive_fused[:, 384:640] = torch.where(positive_bits[..., None], reference, base_tok)
+            positive_stats, _, _ = evaluate_word(positive_fused, params)
+            oracle.update({'positive_gain_bad_fraction': float(positive_bits.float().mean()),
+                           'positive_gain_oracle_iou': positive_stats['iou'],
+                           'positive_gain_tracking_loss_gain': baseline['loss'] - positive_stats['loss']})
             save_file({'received': received.cpu(), 'reference': best_word.float().cpu(),
-                       'causal_labels': labels.cpu()}, str(args.output / f'target{event_index:03d}.safetensors'))
+                       'causal_labels': labels.cpu(), 'signed_tracking_gain': gains.cpu(),
+                       'positive_gain_bits': positive_bits.cpu()}, str(args.output / f'target{event_index:03d}.safetensors'))
         record = {'event': str(path), 'sequence': event['sequence'], 'frame': row['frame'],
                   'baseline': baseline, 'reencode_max_feature_difference': difference,
                   'candidates': comparisons, 'oracle_recovery': oracle}
