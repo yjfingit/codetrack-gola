@@ -418,7 +418,8 @@ def main() -> None:
                 best = {"score": score, "step": step,
                         "state": {k: v.detach().cpu().clone() for k, v in ct.state_dict().items()
                                   if k.startswith(("satr.", "diagnosis.", "motion.prior.",
-                                                   "motion.uncertainty_gain"))}}
+                                                   "motion.uncertainty_gain", "template_pool.",
+                                                   "H."))}}
 
     save_file(best["state"], str(args.save_checkpoint))
     partial = {k[len("satr."):]: v for k, v in best["state"].items() if k.startswith("satr.")}
@@ -430,6 +431,12 @@ def main() -> None:
                if k.startswith("motion.")}
     if partial:
         ct.motion.load_state_dict(partial, strict=False)
+    partial = {k[len("template_pool."):]: v for k, v in best["state"].items()
+               if k.startswith("template_pool.")}
+    if partial:
+        ct.template_pool.load_state_dict(partial, strict=True)
+    if "H.H" in best["state"]:
+        ct.H.H.data.copy_(best["state"]["H.H"].to(ct.H.H))
 
     learned_eval = evaluate_learned(val_cached)
     train_eval = evaluate_learned(train_cached)
