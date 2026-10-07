@@ -33,7 +33,7 @@ run_one() {
   mkdir -p "$dir"
   echo "[parallel-eval] GPU=$GPU seq=$seq"
   CUDA_VISIBLE_DEVICES="$GPU" WEIGHT="$WEIGHT" MIXIN_CONFIG="$MIXIN_CONFIG" \
-    SEQ="$seq" OUT="$dir" bash scripts/codetrack_eval_single.sh >"$log" 2>&1
+    SEQ="$seq" OUT="$dir" VIEW="$dir/view" bash scripts/codetrack_eval_single.sh >"$log" 2>&1
 }
 
 for seq in "${SEQUENCES[@]}"; do

@@ -12,7 +12,7 @@ source scripts/00_env.sh
 SEQ="${SEQ:-10runone}"
 CONFIG="${CONFIG:-codetrack_eval}"
 MIXIN_CONFIG="${MIXIN_CONFIG:-}"
-VIEW="$PWD/data/LasHeR_single"
+VIEW="${VIEW:-$PWD/data/LasHeR_single}"
 OUT="${OUT:-$PWD/outputs/codetrack_eval_$SEQ}"
 CONSTS="$PWD/consts.yaml"
 
