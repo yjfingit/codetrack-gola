@@ -8,6 +8,7 @@
 - Checkpoint: `_probe/E0027/train/decoder.safetensors`, no new fitting or seed/threshold sweep. Source commit captured before execution.
 - Decision: compare exact complete-sequence PR/SR and correction spans. If learned check information does not help, the communication mechanism is not established even if the reference words are useful.
 - Outputs/status: `_probe/E0029/{unary,shuffled}`; pending.
+- Unary arm completes at `feee219`: 200/200 ordered frames, PR **.58000**, SR **.35999998**. Learned code E0028 is .92000 / .62380952, a **+34.00 / +26.38 pp** difference on this one sequence with the same reference-quality network, observations and checkpoint. Shuffle verification remains pending; this does not by itself establish full-test mechanism benefits.
 
 ```bash
 source scripts/00_env.sh

@@ -18,6 +18,8 @@ E0028 full native `rightbackcup` and `whitebetweenblackandblue` were launched at
 - `_probe/E0028/cup.log`, `_probe/E0028/cup/report.json`
 - `_probe/E0028/whitebetween.log`, `_probe/E0028/whitebetween/report.json`
 
+E0029 unary BP-removal arm is terminal on the same 200-frame sequence: PR .58 / SR .35999998 versus learned code .92 / .62380952. Shuffled-syndrome arm is next, GPU4 when free, same checkpoint/sequence/state contract; use `--decoder-ablation shuffled` and a fresh `_probe/E0029/shuffled` output. Do not alter the live cup run.
+
 Paired baseline is in E0024 native shard reports/traces. Compare full per-sequence PR/SR, error/correction spans, unknown/reference refusal, image/bank/template/Kalman feedback and state safety. If native transfer holds, implement proper BP/unary/shuffled and preservation/temporal ablations before full LasHeR-test/RGBT234 promotion. If it regresses, identify actual state/target failure; do not launch threshold/seed/LR sweeps.
 
 ## Material outstanding requirements
