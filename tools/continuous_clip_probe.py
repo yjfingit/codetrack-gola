@@ -27,6 +27,8 @@ def main() -> None:
     ap.add_argument("--abstain-threshold", type=float, default=0.25)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--clip-length", type=int, default=4)
+    ap.add_argument("--val-count", type=int, default=3,
+                    help="number of held-out clips excluded from training")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -215,11 +217,16 @@ def main() -> None:
         "max": float(torch.cat(list(causal_by_name.values())).max()),
     }
     print(json.dumps({"causal_target_stats": causal_stats}), flush=True)
+    split = max(1, len(cached) - int(args.val_count))
+    train_cached = cached[:split]
+    val_cached = cached[split:]
+    if not val_cached:
+        raise RuntimeError("val-count leaves no held-out clip")
 
     ct.train()
     for _ in range(int(args.diag_steps)):
         losses = []
-        for _name, clean_f, cor_f, boxes, damage in cached:
+        for _name, clean_f, cor_f, boxes, damage in train_cached:
             for t in range(args.clip_length):
                 c = ct._split(cor_f[t:t + 1]); k = ct._split(clean_f[t:t + 1])
                 tpl = torch.cat([c["Z_RGB"], c["Z_TIR"], c["Z_on"], c["D_TIR"]], dim=1)
@@ -326,9 +333,46 @@ def main() -> None:
         return (loss, float(torch.stack(feature_gains).mean()),
                 float(torch.stack(tracking_gains).mean()), float(torch.stack(drifts).mean()))
 
+    @torch.no_grad()
+    def evaluate_learned(items):
+        ct.eval()
+        values, q_values, active_values, track_values = [], [], [], []
+        for _name, clean_f, cor_f, boxes, damage in items:
+            ct.reset_sequence()
+            gains, drifts = [], []
+            for t in range(args.clip_length):
+                clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
+                cor_tok = ct._split(cor_f[t:t + 1])["X_TIR"].detach()
+                mask = make_mask(boxes[t], damage[t])
+                out = ct(F_L=cor_f[t:t + 1],
+                         gt_box_xywh=boxes[t:t + 1] if t == 0 else None,
+                         image_size=torch.tensor([[224., 224.]], device="cuda"),
+                         corruption_mask=mask, update_state=True,
+                         preserve_state=(t > 0), observe_motion=(t == 0),
+                         eval_observe=(t > 0))
+                head_out = ct.head(out["X_final"])
+                score, pred_box = predicted_observation(head_out)
+                ct.notify_tracking_score(score, box_xywh=pred_box)
+                target = tracking_targets(boxes[t])
+                repaired_loss, _, _ = _tracking_loss(head_out, target)
+                base_loss, _, _ = _tracking_loss(ct.head(cor_tok), target)
+                track_values.append(float((base_loss - repaired_loss).detach()))
+                q_values.append(float(out["q"].mean()))
+                active_values.append(float((out["q"] >= args.abstain_threshold).float().mean()))
+                d_in = (1 - F.cosine_similarity(cor_tok, clean_tok, dim=-1)).clamp(0, 2)
+                d_out = (1 - F.cosine_similarity(out["X_final"], clean_tok, dim=-1)).clamp(0, 2)
+                gains.append(float((d_in.mean() - d_out.mean()).detach()))
+                drifts.append(float((out["X_final"] - cor_tok).square().mean().detach()))
+            values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
+        return {"gain": sum(x[0] for x in values) / len(values),
+                "healthy_drift": sum(x[1] for x in values) / len(values),
+                "q_mean": sum(q_values) / len(q_values),
+                "active_fraction": sum(active_values) / len(active_values),
+                "tracking_gain": sum(track_values) / len(track_values)}
+
     for step in range(args.steps):
         rows = [step_clip(name, clean_f, cor_f, boxes, damage)
-                for name, clean_f, cor_f, boxes, damage in cached]
+                for name, clean_f, cor_f, boxes, damage in train_cached]
         loss = torch.stack([r[0] for r in rows]).mean()
         opt.zero_grad(set_to_none=True); loss.backward()
         grad = torch.nn.utils.clip_grad_norm_(train_params, 1.0); opt.step()
@@ -340,7 +384,11 @@ def main() -> None:
                    "feature_gain": feature_gain, "tracking_gain": tracking_gain,
                    "healthy_drift": drift, "grad": float(grad)}
             history.append(row); print(json.dumps(row), flush=True)
-            score = tracking_gain + 0.1 * feature_gain - 0.1 * drift
+            validation = evaluate_learned(val_cached)
+            print(json.dumps({"step": step, "validation": validation}), flush=True)
+            ct.train()
+            score = validation["tracking_gain"] + 0.1 * validation["gain"] \
+                    - 0.1 * validation["healthy_drift"]
             if score > best["score"]:
                 best = {"score": score, "step": step,
                         "state": {k: v.detach().cpu().clone() for k, v in ct.state_dict().items()
@@ -358,45 +406,15 @@ def main() -> None:
     if partial:
         ct.motion.load_state_dict(partial, strict=False)
 
-    @torch.no_grad()
-    def evaluate_learned():
-        ct.eval()
-        values = []
-        q_values = []
-        active_values = []
-        for _name, clean_f, cor_f, boxes, damage in cached:
-            ct.reset_sequence()
-            gains, drifts = [], []
-            for t in range(args.clip_length):
-                clean_tok = ct._split(clean_f[t:t + 1])["X_TIR"].detach()
-                cor_tok = ct._split(cor_f[t:t + 1])["X_TIR"].detach()
-                mask = make_mask(boxes[t], damage[t])
-                out = ct(F_L=cor_f[t:t + 1],
-                         gt_box_xywh=boxes[t:t + 1] if t == 0 else None,
-                         image_size=torch.tensor([[224., 224.]], device="cuda"),
-                         corruption_mask=mask, update_state=True,
-                         preserve_state=(t > 0), observe_motion=(t == 0),
-                         eval_observe=(t > 0))
-                head_out = ct.head(out["X_final"])
-                score, pred_box = predicted_observation(head_out)
-                ct.notify_tracking_score(score, box_xywh=pred_box)
-                q_values.append(float(out["q"].mean()))
-                active_values.append(float((out["q"] >= args.abstain_threshold).float().mean()))
-                d_in = (1 - F.cosine_similarity(cor_tok, clean_tok, dim=-1)).clamp(0, 2)
-                d_out = (1 - F.cosine_similarity(out["X_final"], clean_tok, dim=-1)).clamp(0, 2)
-                gains.append(float((d_in.mean() - d_out.mean()).detach()))
-                drifts.append(float((out["X_final"] - cor_tok).square().mean().detach()))
-            values.append((sum(gains) / len(gains), sum(drifts) / len(drifts)))
-        return {"gain": sum(x[0] for x in values) / len(values),
-                "healthy_drift": sum(x[1] for x in values) / len(values),
-                "q_mean": sum(q_values) / len(q_values),
-                "active_fraction": sum(active_values) / len(active_values)}
-
-    learned_eval = evaluate_learned()
+    learned_eval = evaluate_learned(val_cached)
+    train_eval = evaluate_learned(train_cached)
     report = {"probe": "continuous_clip_v1", "seed": args.seed,
               "clip_length": args.clip_length, "sequences": [x[0] for x in cached],
+              "train_sequences": [x[0] for x in train_cached],
+              "validation_sequences": [x[0] for x in val_cached],
               "best_step": best["step"], "best_score": best["score"],
               "learned_eval": learned_eval,
+              "train_eval": train_eval,
               "causal_target_stats": causal_stats,
               "history": history, "checkpoint": str(args.save_checkpoint)}
     args.output.parent.mkdir(parents=True, exist_ok=True)
