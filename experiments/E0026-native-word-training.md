@@ -13,6 +13,8 @@
 - Gate: held-out word selection and real selected-box improvement with healthy/unknown preservation. Then compare learned BP against unary/shuffled/oracle; only promote to live validation after useful native improvement. Do not call an oracle result or identity-only checkpoint a final tracker.
 - Status/checkpoint/PR/SR: prepared.
 - Export completed at `651e73a`: **149 real native frames** (72 failure endpoints plus 77 actual good context controls); 66 have a qualified same-crop target. Control banks use strictly earlier observations. All offered words and their negative alternatives are exported; the student receives no GT-selected reference.
+- First training completed at `56a7309`: 1,540 training proposal rows, 44 held-out native frames, best step 150. Mean selected-box IoU gain **+.001530**, two frames improve and none regress in selected-box IoU. The checkpoint is `_probe/E0026/train/decoder.safetensors`, a cached-pilot artifact only.
+- Gate failure: seven frames write, including unrepairable cases; word Brier .17252 and bit Brier .07176 show insufficient reliability. The original bit labels folded reference usefulness into error labels, while inference treated word/error scores as separate confidence estimates. Do not promote this checkpoint. E0027 fixes the probability conditioning and joint erasure rule rather than sweeping thresholds.
 
 ```bash
 source scripts/00_env.sh

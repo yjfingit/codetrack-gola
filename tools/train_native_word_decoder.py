@@ -15,6 +15,7 @@ def main():
     ap.add_argument('--steps', type=int, default=200)
     ap.add_argument('--batch-size', type=int, default=32)
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--conditional-errors', action='store_true')
     args = ap.parse_args()
     import torch
     import torch.nn.functional as F
@@ -118,10 +119,20 @@ def main():
         out = forward(data)
         bits = data['bit_labels']
         parity = torch.einsum('mn,bn->bm', model.support.float(), bits).remainder(2)
-        detection = (F.binary_cross_entropy_with_logits(out['q_logits'], bits) +
-                     F.binary_cross_entropy_with_logits(out['channel_logits'], bits) +
-                     F.binary_cross_entropy_with_logits(out['syndrome_logits'], parity) +
-                     F.binary_cross_entropy_with_logits(out['word_quality_logits'], data['word_labels']))
+        if args.conditional_errors:
+            known = data['word_labels'] >= .5
+            token_loss = F.binary_cross_entropy_with_logits(out['q_logits'], bits, reduction='none')
+            unary_loss = F.binary_cross_entropy_with_logits(out['channel_logits'], bits, reduction='none')
+            likelihood_target = torch.where(known[:, None], parity, torch.full_like(parity, .5))
+            detection = ((token_loss[known].mean() + unary_loss[known].mean()) if bool(known.any())
+                         else token_loss.sum()*0.)
+            detection = detection + F.binary_cross_entropy_with_logits(out['syndrome_logits'], likelihood_target)
+            detection = detection + F.binary_cross_entropy_with_logits(out['word_quality_logits'], data['word_labels'])
+        else:
+            detection = (F.binary_cross_entropy_with_logits(out['q_logits'], bits) +
+                         F.binary_cross_entropy_with_logits(out['channel_logits'], bits) +
+                         F.binary_cross_entropy_with_logits(out['syndrome_logits'], parity) +
+                         F.binary_cross_entropy_with_logits(out['word_quality_logits'], data['word_labels']))
         tracking = _tracking_loss(head(out['reconstructed']), target, per_sample=True)[0]
         with torch.no_grad():
             original = _tracking_loss(head(data['current_ir']), target, per_sample=True)[0]

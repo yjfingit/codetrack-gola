@@ -33,6 +33,7 @@ identify the exact config, checkpoint, and log used.
 | E0024 | Native hard-frame/history mining and target discovery | 10 complete native train sequences; 26,119 frames | 66.413 | 52.214 | train research reference; 72 natural failure contexts | complete; target discovery next | [record](E0024-native-target-mining.md) |
 | E0025 | Initial-template / motion / temporal-modality reference words | 72 native failures, GT only for target verification | n/a | n/a | available observation/template sources; no fake student token faults | prepared | [record](E0025-native-reference-words.md) |
 | E0026 | One-stage native observed-word reliability + exact syndrome decoding | native hard frames + actual healthy contexts, 7/3 sequence split | pending | pending | all offered references are student-visible; GT selects supervision only | prepared | [record](E0026-native-word-training.md) |
+| E0027 | Conditional error likelihood + joint reference/error erasure | same native export and seed; no threshold sweep | pending | pending | fixes probability semantics before deployment | prepared | [record](E0027-conditional-word-erasure.md) |
 
 ## Current Read
 

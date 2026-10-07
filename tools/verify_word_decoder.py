@@ -50,6 +50,16 @@ class WordDecoder(unittest.TestCase):
         torch.testing.assert_close(accepted_training, accepted_deployment, atol=0., rtol=0.)
         torch.testing.assert_close(accepted_deployment, data['reference_ir'], atol=0., rtol=0.)
 
+    def test_two_weak_evidences_do_not_authorize_correction(self):
+        m = NativeWordDecoder(dim=32, mid=8, hidden=16, grid=4).eval()
+        with torch.no_grad():
+            m.symbol[-1].bias.fill_(float(torch.logit(torch.tensor(.6))) - float(m.channel_prior))
+            m.word_quality[-1].bias.fill_(float(torch.logit(torch.tensor(.6))))
+        data = self.inputs(); out = m(**data)
+        self.assertTrue(bool((out['q'] > .5).all() and (out['word_quality'] > .5).all()))
+        self.assertFalse(bool(out['accept'].any()))
+        torch.testing.assert_close(out['reconstructed'], data['current_ir'], atol=0., rtol=0.)
+
 
 if __name__ == '__main__':
     unittest.main()

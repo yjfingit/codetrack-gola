@@ -60,7 +60,9 @@ class NativeWordDecoder(nn.Module):
         probability = decoded['q'] * quality[:, None]
         # Identical hard forward rule in training and deployment. The straight-
         # through backward path teaches tracking/preservation without an oracle route.
-        accept = (decoded['q'] >= .5) & (quality[:, None] >= .5)
+        # Chain rule: a useful reference and a harmful receiver symbol must both
+        # hold. Two probabilities just above .5 are still jointly uncertain.
+        accept = probability >= .5
         reconstructed = torch.where(accept[..., None], reference_ir, current_ir)
         if self.training:
             reconstructed = reconstructed + (probability - probability.detach())[..., None] * (reference_ir - current_ir)
