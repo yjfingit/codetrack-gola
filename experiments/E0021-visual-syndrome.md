@@ -1,7 +1,7 @@
 # E0021: Learned noisy error-syndrome likelihood and exact BP
 
 - Date: 2026-10-07.
-- Status: prepared.
+- Status: completed at `c358c8e`; no promotion to full training.
 - Hypothesis: explicitly supervising XOR check bits and decoding their calibrated likelihood can improve harmful-token detection beyond a shared unary channel, while an uncertain syndrome should cause no correction. Causal motion should supply target-location evidence directly to detection.
 - Source commit: captured before launch in `_probe/E0021/source_commit.txt`.
 - Data/sampling: same versioned train10, 7/3 complete sequence holdout, two middle-video contiguous clips per sequence, length 4, baseline-predicted crop policy. No LasHeR-test access for this choice.
@@ -14,7 +14,12 @@
 - Mechanism gate: compare held-out q AUROC/Brier against unary channel, shuffled check likelihoods and exact oracle syndrome; compare check Brier against constant-prevalence prediction. Motion-off uses the same weights. Do not claim ECC helps if only unary classification improves or if the likelihood encoder cannot predict parity.
 - Tracking gate: positive held-out tracking and selected-box IoU gains with bounded healthy drift, then independent closed-loop LasHeR-train validation. Feature-cache metrics never count as final PR/SR.
 - Outputs/checkpoint: `_probe/E0021/visual.{json,log,safetensors}` plus trajectory and source metadata. No large output enters Git.
-- PR/SR / conclusion: pending.
+- Held-out best step: 0; q-AUROC .91602, unary .90671, shuffled syndrome .89994, oracle syndrome .97826. Check parity AUROC .92396.
+- Probability calibration: q Brier .02376 versus unary .02218; check Brier .01121 versus constant prevalence .01063. The rankings improve, but the calibrated-likelihood gate fails.
+- Recovery: tracking-loss gain +0.00004287, bad-token feature gain +0.00000140, healthy drift 7.41e-8; selected-box IoU gain **-0.00002529**. Later SATR updates overfit. Reject as a final tracker or scale-up candidate.
+- Motion off: tracking gain +0.00001994, selected-box IoU gain +0.00027988 and q-AUROC .91368. This does not establish beneficial motion correction.
+- Checkpoint: `_probe/E0021/visual.safetensors`, diagnostic only. PR/SR not evaluated.
+- Next decision under the updated task: image-level realistic impairment, trustworthy clean repair targets and matched student observation/history conditions take priority over further decoder tuning.
 
 ```bash
 source scripts/00_env.sh

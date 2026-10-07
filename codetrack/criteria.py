@@ -76,9 +76,15 @@ def _tracking_loss(outputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Te
         sel_gt = gt_boxes.reshape(-1, 4) if gt_boxes.numel() else gt_boxes
 
     with torch.no_grad():
-        gt_map = torch.zeros((n, h * w), dtype=torch.float32, device=score_map.device)
-        if has_pos:
-            gt_map.index_put_((pos_b, pos_m), bbox_overlaps(sel_gt, sel_boxes, is_aligned=True))
+        reference_quality = targets.get("score_quality_map")
+        if reference_quality is not None:
+            if reference_quality.shape != (n, h, w):
+                raise ValueError("score_quality_map must match score_map [B,H,W]")
+            gt_map = reference_quality.detach().to(score_map).reshape(n, h * w)
+        else:
+            gt_map = torch.zeros((n, h * w), dtype=torch.float32, device=score_map.device)
+            if has_pos:
+                gt_map.index_put_((pos_b, pos_m), bbox_overlaps(sel_gt, sel_boxes, is_aligned=True))
     if per_sample:
         pos_count = score_map.new_zeros(n)
         if has_pos:

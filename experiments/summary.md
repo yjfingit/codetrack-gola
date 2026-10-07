@@ -27,7 +27,8 @@ identify the exact config, checkpoint, and log used.
 | E0018 | Causal predicted-crop replay versus GT-centred control | train10, 7/3 sequence holdout, mid-video clips, seed 42 | n/a | n/a | causal q-AUC .624 vs oracle-crop .760; both selected-box IoU gains negative | reject legacy recipe; no scale-up | [record](E0018-causal-replay.md) |
 | E0019 | No-op-safe causal labels | exactly matched 20 real clip trajectories | n/a | n/a | strong label density 24.92% -> 1.64% | old mechanism diagnostics need remeasurement | [record](E0019-causal-label-audit.md) |
 | E0020 | Noisy GF(2) error-syndrome sum-product decoder | five exact-posterior/causality/gradient witnesses | n/a | n/a | decoder primitive, not tracking result | pass mathematics; visual likelihood integration pending | [record](E0020-exact-syndrome-decoder.md) |
-| E0021 | Visual parity likelihood + exact syndrome BP + motion evidence | same train10 causal crops, 7/3 sequence holdout, seed 42 | pending | pending | channel/learned/shuffled/oracle syndrome comparison | prepared | [record](E0021-visual-syndrome.md) |
+| E0021 | Visual parity likelihood + exact syndrome BP + motion evidence | same train10 causal crops, 7/3 sequence holdout, seed 42 | n/a | n/a | q AUC .916 vs unary .907 / shuffled .900; probability calibration and selected-box gates fail | retain verified decoder; reject recipe for scale-up | [record](E0021-visual-syndrome.md) |
+| E0022 | Detached clean-reference tracking quality target | worse-box loss counterexample + gradient witness | n/a | n/a | old loss rewards worse IoU; fixed target removes this escape | pass objective witness; image-level training comparison next | [record](E0022-fixed-tracking-quality.md) |
 
 ## Current Read
 

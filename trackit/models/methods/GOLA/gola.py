@@ -207,6 +207,9 @@ class GOLA_DINOv2(nn.Module):
                     boxes = tracking_targets.get("boxes")
                     if boxes is not None:
                         repeated_targets["boxes"] = boxes.repeat_interleave(width, dim=0)
+                    quality = tracking_targets.get("score_quality_map")
+                    if quality is not None:
+                        repeated_targets["score_quality_map"] = quality.repeat_interleave(width, dim=0)
                     num_pos = tracking_targets.get("num_positive_samples")
                     if num_pos is not None:
                         repeated_targets["num_positive_samples"] = num_pos * width

@@ -35,6 +35,7 @@ def main() -> None:
     ap.add_argument("--crop-policy", choices=("baseline", "gt_centered"), default="baseline")
     ap.add_argument("--clips-per-sequence", type=int, default=2)
     ap.add_argument("--decoder-type", choices=("neural_bp", "syndrome_bp"), default="neural_bp")
+    ap.add_argument("--tracking-quality", choices=("self", "fixed_reference"), default="self")
     args = ap.parse_args()
     if args.clip_length < 4 or args.clips_per_sequence < 1:
         ap.error("use clip-length >= 4 and clips-per-sequence >= 1")
@@ -105,7 +106,7 @@ def main() -> None:
                 m[:, yy * 16 + xx] = True
         return m
 
-    def tracking_targets(box_xywh):
+    def tracking_targets(box_xywh, reference_head=None):
         cx, cy, bw, bh = box_xywh
         xyxy = torch.stack([cx - 0.5 * bw, cy - 0.5 * bh,
                             cx + 0.5 * bw, cy + 0.5 * bh])
@@ -116,12 +117,24 @@ def main() -> None:
         else:
             pos = np.empty(0, dtype=np.int64)
         gt = xyxy / 224.0
-        return {
+        target = {
             "num_positive_samples": torch.tensor([len(pos)], device="cuda", dtype=torch.float32),
             "positive_sample_batch_dim_indices": torch.zeros(len(pos), device="cuda", dtype=torch.long),
             "positive_sample_map_dim_indices": torch.as_tensor(pos, device="cuda", dtype=torch.long),
             "boxes": gt[None],
         }
+        if args.tracking_quality == "fixed_reference":
+            if reference_head is None:
+                raise ValueError("fixed quality requires a frozen reference head")
+            from codetrack.criteria import bbox_overlaps
+            quality = torch.zeros_like(reference_head["score_map"])
+            positions = target["positive_sample_map_dim_indices"]
+            if positions.numel():
+                selected = reference_head["boxes"].reshape(1, -1, 4)[0, positions]
+                quality.flatten(1)[0, positions] = bbox_overlaps(
+                    gt.expand(len(pos), -1), selected, is_aligned=True).detach()
+            target["score_quality_map"] = quality.detach()
+        return target
 
     causal_by_name = {}
     with torch.no_grad():
@@ -134,7 +147,7 @@ def main() -> None:
                 cor_head = ct.head(cor_tok.float())
                 targets.append(model._causal_token_impact_target(
                     cor_tok, clean_tok, cor_head, clean_head,
-                    tracking_targets=tracking_targets(boxes[t]), max_tokens=256,
+                    tracking_targets=tracking_targets(boxes[t], clean_head), max_tokens=256,
                     min_ratio=0.25))
             causal_by_name[name] = torch.cat(targets, dim=0)
     causal_stats = {
@@ -272,7 +285,8 @@ def main() -> None:
                      preserve_state=(t > 0), observe_motion=False, eval_observe=True)
             repaired_head = ct.head(out["X_final"])
             base_head = ct.head(cor_tok)
-            target = tracking_targets(boxes[t])
+            with torch.no_grad():
+                target = tracking_targets(boxes[t], ct.head(clean_tok))
             track_repaired, _, _ = _tracking_loss(repaired_head, target)
             with torch.no_grad():
                 track_base, _, _ = _tracking_loss(base_head, target)
@@ -335,7 +349,7 @@ def main() -> None:
                 head_out = ct.head(out["X_final"])
                 score, pred_box = predicted_observation(head_out)
                 ct.notify_tracking_score(score, box_xywh=pred_box)
-                target = tracking_targets(boxes[t])
+                target = tracking_targets(boxes[t], ct.head(clean_tok))
                 repaired_loss, _, _ = _tracking_loss(head_out, target)
                 base_head = ct.head(cor_tok)
                 base_loss, _, _ = _tracking_loss(base_head, target)
