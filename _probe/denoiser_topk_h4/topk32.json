@@ -1,0 +1,23 @@
+{
+  "probe": "denoiser_write_support_v1",
+  "mode": "topk",
+  "topk": 32,
+  "checkpoint": "/home/yangjuanfeng/lab/projects/gola-CodeTrack/_probe/grid/s1_upscale_400/out/gpu2_up005/GOLA-codetrack_s1-mixin-_grid_gpu2_up005-2026.10.04-16.20.18-049725/checkpoint/epoch_09/model.bin",
+  "seed": 0,
+  "batch": 10,
+  "checkpoint_tensors": 1392,
+  "unexpected_keys": [],
+  "damage_fraction": 0.150390625,
+  "support_fraction": 0.125,
+  "support_damage_recall": 0.33766233921051025,
+  "q_mean": 0.19670411944389343,
+  "q_std": 5.504944783751853e-05,
+  "gate_mean": 0.024601025506854057,
+  "d_input": 0.07398319244384766,
+  "d_refiner": 0.07381446659564972,
+  "d_final": 0.07384701073169708,
+  "gain_refiner": 0.00016872216656338423,
+  "gain_final": 0.00013618329830933362,
+  "denoiser_delta_l2_damage": 0.2291988581418991,
+  "denoiser_delta_l2_clean": 0.06784311681985855
+}

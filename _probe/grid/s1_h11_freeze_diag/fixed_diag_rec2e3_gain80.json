@@ -1,0 +1,69 @@
+{
+  "probe": "diagnosis_direction_v1",
+  "checkpoint": "_probe/grid/s1_h11_freeze_diag/out/rec2e3_gain80/GOLA-codetrack_s1-mixin-_grid_rec2e3_gain80-2026.10.04-17.59.12-519740/checkpoint/epoch_00/model.bin",
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "tokens": 256,
+  "topk": 32,
+  "damage_fraction": 0.150390625,
+  "error_mean": 0.027666419744491577,
+  "error_std": 0.043670374900102615,
+  "q_mean": 0.7577878832817078,
+  "q_std": 0.0009163176873698831,
+  "q_logits_std": 0.005006236955523491,
+  "s_std": 0.025775885209441185,
+  "candidates": {
+    "q": {
+      "auroc": 0.7022755742073059,
+      "overlap": 0.3109106719493866,
+      "topk_gap": 0.0011943578720092773,
+      "score_std": 0.0009163176873698831
+    },
+    "neg_q": {
+      "auroc": 0.297728031873703,
+      "overlap": 0.009474150836467743,
+      "topk_gap": 0.0006146430969238281,
+      "score_std": 0.0009163176873698831
+    },
+    "q_logits": {
+      "auroc": 0.7022743821144104,
+      "overlap": 0.3109106719493866,
+      "topk_gap": 0.006524205207824707,
+      "score_std": 0.005006236955523491
+    },
+    "neg_q_logits": {
+      "auroc": 0.29771965742111206,
+      "overlap": 0.009474150836467743,
+      "topk_gap": 0.0033524036407470703,
+      "score_std": 0.005006236955523491
+    },
+    "s_to_token": {
+      "auroc": 0.2980325520038605,
+      "overlap": 0.009474150836467743,
+      "topk_gap": 0.003347232937812805,
+      "score_std": 0.005004781298339367
+    },
+    "neg_s_to_token": {
+      "auroc": 0.7019674777984619,
+      "overlap": 0.3109106719493866,
+      "topk_gap": 0.006521180272102356,
+      "score_std": 0.005004781298339367
+    }
+  },
+  "check_corr": {
+    "mean_offdiag": 0.0725836232304573,
+    "median_offdiag": 0.11309175938367844,
+    "abs_mean_offdiag": 0.6258649230003357,
+    "max_abs_offdiag": 0.9988032579421997
+  }
+}

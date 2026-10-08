@@ -1,0 +1,39 @@
+{
+  "probe": "oracle_gate_v1",
+  "checkpoint": "weights/codetrack_satr_learned_best.safetensors",
+  "topk": 32,
+  "satr_rounds": 3,
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "damage_fraction": 0.150390625,
+  "results": {
+    "learned": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.025703376159071922,
+      "gain_total": 0.001963044283911586,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.0672142282128334,
+      "gain_damage": 0.0067689609713852406
+    },
+    "oracle_soft": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.026630008593201637,
+      "gain_total": 0.0010364142945036292,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.06708428263664246,
+      "gain_damage": 0.006898908875882626
+    },
+    "oracle_hard": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.026786575093865395,
+      "gain_total": 0.000879846338648349,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.06813278794288635,
+      "gain_damage": 0.00585040682926774
+    }
+  }
+}

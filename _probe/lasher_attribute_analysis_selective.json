@@ -1,0 +1,1795 @@
+{
+  "dataset": "/home/yangjuanfeng/lab/dataset/LasHeR",
+  "baseline_log": "_probe/eval_gola_identity_full.log",
+  "candidate_log": "_probe/eval_selective_accept_full.log",
+  "sequence_count": 245,
+  "attributes_are_overlapping": true,
+  "metrics": [
+    "success (SR)",
+    "prec (PR)",
+    "norm_pre (NPR)"
+  ],
+  "groups_ranked_by_sr": [
+    {
+      "attribute": "HO",
+      "meaning": "重遮挡",
+      "count": 17,
+      "delta_sr_pp": 1.8123529411764694,
+      "delta_pr_pp": 2.5347058823529407,
+      "delta_npr_pp": 2.719411764705882,
+      "median_delta_sr_pp": 0.8899999999999963,
+      "sr_std_pp": 5.338894465865293,
+      "sr_improved_fraction": 0.7647058823529411,
+      "sr_worsened_fraction": 0.23529411764705882,
+      "sr_ci95_pp": [
+        -0.7293088235294123,
+        4.204249999999999
+      ]
+    },
+    {
+      "attribute": "FL",
+      "meaning": "快速行进",
+      "count": 20,
+      "delta_sr_pp": 1.699,
+      "delta_pr_pp": 3.2800000000000002,
+      "delta_npr_pp": 2.354499999999999,
+      "median_delta_sr_pp": -0.055000000000005045,
+      "sr_std_pp": 9.993680055546685,
+      "sr_improved_fraction": 0.5,
+      "sr_worsened_fraction": 0.5,
+      "sr_ci95_pp": [
+        -2.1795874999999985,
+        6.263175000000001
+      ]
+    },
+    {
+      "attribute": "NO",
+      "meaning": "无遮挡",
+      "count": 33,
+      "delta_sr_pp": 1.034848484848484,
+      "delta_pr_pp": 1.9287878787878792,
+      "delta_npr_pp": 1.939393939393939,
+      "median_delta_sr_pp": 0.0,
+      "sr_std_pp": 5.4063192892739655,
+      "sr_improved_fraction": 0.48484848484848486,
+      "sr_worsened_fraction": 0.48484848484848486,
+      "sr_ci95_pp": [
+        -0.33484848484848573,
+        3.0954848484848476
+      ]
+    },
+    {
+      "attribute": "TC",
+      "meaning": "热交叉",
+      "count": 148,
+      "delta_sr_pp": 0.43499999999999955,
+      "delta_pr_pp": 0.8390540540540543,
+      "delta_npr_pp": 0.5420270270270269,
+      "median_delta_sr_pp": 0.09500000000000064,
+      "sr_std_pp": 7.382500037434547,
+      "sr_improved_fraction": 0.5202702702702703,
+      "sr_worsened_fraction": 0.4594594594594595,
+      "sr_ci95_pp": [
+        -0.7569662162162172,
+        1.6400354729729723
+      ]
+    },
+    {
+      "attribute": "LR",
+      "meaning": "低分辨率",
+      "count": 68,
+      "delta_sr_pp": 0.2991176470588236,
+      "delta_pr_pp": 0.5436764705882352,
+      "delta_npr_pp": 0.3026470588235292,
+      "median_delta_sr_pp": -0.030000000000002247,
+      "sr_std_pp": 8.816666838165448,
+      "sr_improved_fraction": 0.4852941176470588,
+      "sr_worsened_fraction": 0.5,
+      "sr_ci95_pp": [
+        -1.7701654411764702,
+        2.401216911764706
+      ]
+    },
+    {
+      "attribute": "FM",
+      "meaning": "快速运动",
+      "count": 193,
+      "delta_sr_pp": 0.22326424870466327,
+      "delta_pr_pp": 0.40212435233160604,
+      "delta_npr_pp": 0.4934715025906736,
+      "median_delta_sr_pp": 0.0,
+      "sr_std_pp": 6.737116193274682,
+      "sr_improved_fraction": 0.49740932642487046,
+      "sr_worsened_fraction": 0.48186528497409326,
+      "sr_ci95_pp": [
+        -0.6953510362694303,
+        1.1634559585492235
+      ]
+    },
+    {
+      "attribute": "SA",
+      "meaning": "相似外观",
+      "count": 107,
+      "delta_sr_pp": 0.13971962616822406,
+      "delta_pr_pp": 0.38990654205607517,
+      "delta_npr_pp": -0.06635514018691595,
+      "median_delta_sr_pp": -0.029999999999996696,
+      "sr_std_pp": 7.252875481547824,
+      "sr_improved_fraction": 0.4672897196261682,
+      "sr_worsened_fraction": 0.5046728971962616,
+      "sr_ci95_pp": [
+        -1.1677289719626174,
+        1.5221495327102799
+      ]
+    },
+    {
+      "attribute": "SV",
+      "meaning": "尺度变化",
+      "count": 222,
+      "delta_sr_pp": -0.03563063063063093,
+      "delta_pr_pp": 0.04783783783783792,
+      "delta_npr_pp": 0.009684684684684619,
+      "median_delta_sr_pp": -0.06500000000000394,
+      "sr_std_pp": 6.662549639593915,
+      "sr_improved_fraction": 0.4774774774774775,
+      "sr_worsened_fraction": 0.509009009009009,
+      "sr_ci95_pp": [
+        -0.9296531531531532,
+        0.8209583333333328
+      ]
+    },
+    {
+      "attribute": "BC",
+      "meaning": "背景杂乱",
+      "count": 78,
+      "delta_sr_pp": -0.0650000000000005,
+      "delta_pr_pp": -0.01833333333333338,
+      "delta_npr_pp": -0.014230769230768695,
+      "median_delta_sr_pp": 0.4750000000000032,
+      "sr_std_pp": 6.22877439946901,
+      "sr_improved_fraction": 0.5384615384615384,
+      "sr_worsened_fraction": 0.46153846153846156,
+      "sr_ci95_pp": [
+        -1.5455641025641034,
+        1.202060897435898
+      ]
+    },
+    {
+      "attribute": "LI",
+      "meaning": "低照度",
+      "count": 51,
+      "delta_sr_pp": -0.16686274509803967,
+      "delta_pr_pp": -1.0745098039215688,
+      "delta_npr_pp": 0.151176470588234,
+      "median_delta_sr_pp": -0.21999999999999797,
+      "sr_std_pp": 7.644057166242566,
+      "sr_improved_fraction": 0.43137254901960786,
+      "sr_worsened_fraction": 0.5686274509803921,
+      "sr_ci95_pp": [
+        -2.2997303921568637,
+        1.857666666666668
+      ]
+    },
+    {
+      "attribute": "PO",
+      "meaning": "部分遮挡",
+      "count": 215,
+      "delta_sr_pp": -0.18088372093023272,
+      "delta_pr_pp": -0.11162790697674407,
+      "delta_npr_pp": -0.2666976744186047,
+      "median_delta_sr_pp": -0.060000000000004494,
+      "sr_std_pp": 6.831048869290887,
+      "sr_improved_fraction": 0.4790697674418605,
+      "sr_worsened_fraction": 0.5069767441860465,
+      "sr_ci95_pp": [
+        -1.131211627906977,
+        0.7131279069767443
+      ]
+    },
+    {
+      "attribute": "CM",
+      "meaning": "摄像机运动",
+      "count": 133,
+      "delta_sr_pp": -0.41857142857142865,
+      "delta_pr_pp": -0.3542105263157891,
+      "delta_npr_pp": -0.4724060150375939,
+      "median_delta_sr_pp": 0.0,
+      "sr_std_pp": 7.483664345401392,
+      "sr_improved_fraction": 0.49624060150375937,
+      "sr_worsened_fraction": 0.49624060150375937,
+      "sr_ci95_pp": [
+        -1.6952293233082707,
+        0.7978740601503763
+      ]
+    },
+    {
+      "attribute": "TO",
+      "meaning": "完全遮挡",
+      "count": 87,
+      "delta_sr_pp": -0.4893103448275862,
+      "delta_pr_pp": -0.595057471264368,
+      "delta_npr_pp": -0.5796551724137933,
+      "median_delta_sr_pp": -0.21999999999999797,
+      "sr_std_pp": 7.076727793481339,
+      "sr_improved_fraction": 0.42528735632183906,
+      "sr_worsened_fraction": 0.5632183908045977,
+      "sr_ci95_pp": [
+        -1.998514367816092,
+        0.8830459770114947
+      ]
+    },
+    {
+      "attribute": "ARV",
+      "meaning": "宽高比变化",
+      "count": 109,
+      "delta_sr_pp": -0.5652293577981652,
+      "delta_pr_pp": -0.4856880733944956,
+      "delta_npr_pp": -0.901651376146789,
+      "median_delta_sr_pp": -0.08000000000000021,
+      "sr_std_pp": 7.845867111667451,
+      "sr_improved_fraction": 0.45871559633027525,
+      "sr_worsened_fraction": 0.5137614678899083,
+      "sr_ci95_pp": [
+        -2.049458715596331,
+        0.8787247706422018
+      ]
+    },
+    {
+      "attribute": "AIV",
+      "meaning": "照度突变",
+      "count": 7,
+      "delta_sr_pp": -0.6957142857142866,
+      "delta_pr_pp": -0.4585714285714281,
+      "delta_npr_pp": -0.37714285714286083,
+      "median_delta_sr_pp": -0.39000000000000146,
+      "sr_std_pp": 5.821053332925401,
+      "sr_improved_fraction": 0.2857142857142857,
+      "sr_worsened_fraction": 0.7142857142857143,
+      "sr_ci95_pp": [
+        -4.488571428571431,
+        3.457107142857148
+      ]
+    },
+    {
+      "attribute": "MB",
+      "meaning": "运动模糊",
+      "count": 88,
+      "delta_sr_pp": -1.1412500000000003,
+      "delta_pr_pp": -1.4807954545454538,
+      "delta_npr_pp": -1.191590909090909,
+      "median_delta_sr_pp": -0.3049999999999997,
+      "sr_std_pp": 7.598050840870951,
+      "sr_improved_fraction": 0.3977272727272727,
+      "sr_worsened_fraction": 0.5795454545454546,
+      "sr_ci95_pp": [
+        -2.7632556818181815,
+        0.40072727272727315
+      ]
+    },
+    {
+      "attribute": "DEF",
+      "meaning": "形变",
+      "count": 46,
+      "delta_sr_pp": -1.2491304347826082,
+      "delta_pr_pp": -0.9571739130434784,
+      "delta_npr_pp": -1.4941304347826092,
+      "median_delta_sr_pp": -0.17499999999999738,
+      "sr_std_pp": 5.309163912451316,
+      "sr_improved_fraction": 0.43478260869565216,
+      "sr_worsened_fraction": 0.5434782608695652,
+      "sr_ci95_pp": [
+        -2.9281521739130434,
+        0.09002717391304395
+      ]
+    },
+    {
+      "attribute": "HI",
+      "meaning": "高照度",
+      "count": 34,
+      "delta_sr_pp": -1.5320588235294126,
+      "delta_pr_pp": -1.791176470588236,
+      "delta_npr_pp": -0.8032352941176484,
+      "median_delta_sr_pp": 0.054999999999999494,
+      "sr_std_pp": 10.444770992575378,
+      "sr_improved_fraction": 0.5294117647058824,
+      "sr_worsened_fraction": 0.47058823529411764,
+      "sr_ci95_pp": [
+        -5.164389705882353,
+        1.7309117647058823
+      ]
+    },
+    {
+      "attribute": "OV",
+      "meaning": "出视野",
+      "count": 7,
+      "delta_sr_pp": -3.4542857142857137,
+      "delta_pr_pp": -3.9228571428571404,
+      "delta_npr_pp": -3.909999999999999,
+      "median_delta_sr_pp": -2.2299999999999986,
+      "sr_std_pp": 7.310679077310713,
+      "sr_improved_fraction": 0.14285714285714285,
+      "sr_worsened_fraction": 0.8571428571428571,
+      "sr_ci95_pp": [
+        -9.190571428571431,
+        0.30714285714285977
+      ]
+    }
+  ],
+  "overall_paired_delta_pp": {
+    "sr": -0.03485714285714309,
+    "pr": 0.1482448979591838,
+    "npr": 0.029714285714285724
+  },
+  "sequence_delta": [
+    {
+      "name": "blkboyhead",
+      "delta_sr_pp": 29.250000000000004,
+      "delta_pr_pp": 41.72,
+      "delta_npr_pp": 37.95
+    },
+    {
+      "name": "truckgonorth",
+      "delta_sr_pp": 28.569999999999997,
+      "delta_pr_pp": 49.339999999999996,
+      "delta_npr_pp": 55.919999999999995
+    },
+    {
+      "name": "boy`headwithouthat",
+      "delta_sr_pp": 22.860000000000003,
+      "delta_pr_pp": 32.67,
+      "delta_npr_pp": 27.849999999999998
+    },
+    {
+      "name": "2girlup",
+      "delta_sr_pp": 21.41,
+      "delta_pr_pp": 37.809999999999995,
+      "delta_npr_pp": 24.370000000000005
+    },
+    {
+      "name": "leftblkTboy",
+      "delta_sr_pp": 19.09,
+      "delta_pr_pp": 22.410000000000004,
+      "delta_npr_pp": 22.329999999999995
+    },
+    {
+      "name": "couple",
+      "delta_sr_pp": 18.239999999999995,
+      "delta_pr_pp": 18.809999999999995,
+      "delta_npr_pp": 12.869999999999992
+    },
+    {
+      "name": "1strowrightgirl3540",
+      "delta_sr_pp": 17.87,
+      "delta_pr_pp": 30.279999999999994,
+      "delta_npr_pp": 16.610000000000003
+    },
+    {
+      "name": "ab_pingpongball2",
+      "delta_sr_pp": 14.729999999999999,
+      "delta_pr_pp": 22.68,
+      "delta_npr_pp": 19.59
+    },
+    {
+      "name": "blkboydown",
+      "delta_sr_pp": 12.89,
+      "delta_pr_pp": 25.61,
+      "delta_npr_pp": 15.860000000000007
+    },
+    {
+      "name": "leftmirror",
+      "delta_sr_pp": 11.959999999999994,
+      "delta_pr_pp": 16.600000000000005,
+      "delta_npr_pp": 15.700000000000003
+    },
+    {
+      "name": "whitebikebelow",
+      "delta_sr_pp": 10.809999999999997,
+      "delta_pr_pp": 13.949999999999996,
+      "delta_npr_pp": 8.479999999999999
+    },
+    {
+      "name": "ab_blkskirtgirl",
+      "delta_sr_pp": 10.599999999999998,
+      "delta_pr_pp": 14.960000000000006,
+      "delta_npr_pp": 12.5
+    },
+    {
+      "name": "boytakingbasketballfollowing",
+      "delta_sr_pp": 10.280000000000001,
+      "delta_pr_pp": 16.690000000000005,
+      "delta_npr_pp": 12.080000000000002
+    },
+    {
+      "name": "11leftboy",
+      "delta_sr_pp": 9.46,
+      "delta_pr_pp": 11.839999999999995,
+      "delta_npr_pp": 12.5
+    },
+    {
+      "name": "ab_bolstershaking",
+      "delta_sr_pp": 8.97,
+      "delta_pr_pp": 12.229999999999997,
+      "delta_npr_pp": 12.249999999999995
+    },
+    {
+      "name": "rightwaiter1_quezhen",
+      "delta_sr_pp": 8.279999999999998,
+      "delta_pr_pp": 11.039999999999994,
+      "delta_npr_pp": 9.420000000000005
+    },
+    {
+      "name": "advancedredcup",
+      "delta_sr_pp": 6.9200000000000035,
+      "delta_pr_pp": 8.709999999999996,
+      "delta_npr_pp": 9.57
+    },
+    {
+      "name": "ab_girlcrossroad",
+      "delta_sr_pp": 6.430000000000002,
+      "delta_pr_pp": 8.760000000000002,
+      "delta_npr_pp": 9.019999999999994
+    },
+    {
+      "name": "guardunderthecolumn",
+      "delta_sr_pp": 5.8599999999999985,
+      "delta_pr_pp": 8.510000000000007,
+      "delta_npr_pp": 7.090000000000007
+    },
+    {
+      "name": "large",
+      "delta_sr_pp": 5.8599999999999985,
+      "delta_pr_pp": 8.07,
+      "delta_npr_pp": 8.879999999999999
+    },
+    {
+      "name": "drillmasterfollowingatright",
+      "delta_sr_pp": 5.630000000000002,
+      "delta_pr_pp": 7.8400000000000025,
+      "delta_npr_pp": 5.810000000000004
+    },
+    {
+      "name": "leftgirl'swhitebag",
+      "delta_sr_pp": 5.459999999999998,
+      "delta_pr_pp": 9.560000000000002,
+      "delta_npr_pp": 6.769999999999998
+    },
+    {
+      "name": "shinybikeboy2left",
+      "delta_sr_pp": 5.380000000000002,
+      "delta_pr_pp": 12.379999999999992,
+      "delta_npr_pp": 10.929999999999996
+    },
+    {
+      "name": "pinkwithblktopcup",
+      "delta_sr_pp": 5.289999999999995,
+      "delta_pr_pp": 7.479999999999998,
+      "delta_npr_pp": 9.919999999999995
+    },
+    {
+      "name": "boy2treesfindbike",
+      "delta_sr_pp": 5.020000000000002,
+      "delta_pr_pp": 10.06999999999999,
+      "delta_npr_pp": 5.169999999999996
+    },
+    {
+      "name": "hyalinepaperfrontface",
+      "delta_sr_pp": 4.729999999999998,
+      "delta_pr_pp": 4.61,
+      "delta_npr_pp": 3.7800000000000002
+    },
+    {
+      "name": "boyplayphone",
+      "delta_sr_pp": 4.170000000000007,
+      "delta_pr_pp": 5.959999999999999,
+      "delta_npr_pp": 9.629999999999994
+    },
+    {
+      "name": "7rightorangegirl",
+      "delta_sr_pp": 3.870000000000001,
+      "delta_pr_pp": 6.359999999999999,
+      "delta_npr_pp": 3.2799999999999994
+    },
+    {
+      "name": "umbrellawillbefold",
+      "delta_sr_pp": 3.8000000000000034,
+      "delta_pr_pp": 4.5899999999999945,
+      "delta_npr_pp": 3.710000000000002
+    },
+    {
+      "name": "catbrownback2bush",
+      "delta_sr_pp": 3.73,
+      "delta_pr_pp": 3.1200000000000006,
+      "delta_npr_pp": 3.060000000000007
+    },
+    {
+      "name": "rightcar-chongT",
+      "delta_sr_pp": 3.6999999999999975,
+      "delta_pr_pp": 4.269999999999996,
+      "delta_npr_pp": 9.27
+    },
+    {
+      "name": "boyinlight",
+      "delta_sr_pp": 3.2399999999999984,
+      "delta_pr_pp": 3.1399999999999983,
+      "delta_npr_pp": 3.1299999999999994
+    },
+    {
+      "name": "redtricycle",
+      "delta_sr_pp": 3.2100000000000017,
+      "delta_pr_pp": 0.5900000000000016,
+      "delta_npr_pp": 4.760000000000009
+    },
+    {
+      "name": "midboyNo_9",
+      "delta_sr_pp": 3.1000000000000028,
+      "delta_pr_pp": 3.6600000000000077,
+      "delta_npr_pp": 3.5399999999999987
+    },
+    {
+      "name": "carcomingfromlight",
+      "delta_sr_pp": 2.9299999999999993,
+      "delta_pr_pp": 6.3900000000000015,
+      "delta_npr_pp": 3.83
+    },
+    {
+      "name": "leftbottle2hang",
+      "delta_sr_pp": 2.9200000000000004,
+      "delta_pr_pp": 4.1899999999999995,
+      "delta_npr_pp": 3.300000000000003
+    },
+    {
+      "name": "3rdgrouplastboy",
+      "delta_sr_pp": 2.839999999999998,
+      "delta_pr_pp": 3.600000000000003,
+      "delta_npr_pp": 2.639999999999998
+    },
+    {
+      "name": "ab_rightlowerredcup_quezhen",
+      "delta_sr_pp": 2.8000000000000025,
+      "delta_pr_pp": 0.269999999999998,
+      "delta_npr_pp": 1.8799999999999983
+    },
+    {
+      "name": "blkstandboy",
+      "delta_sr_pp": 2.749999999999997,
+      "delta_pr_pp": 3.1600000000000072,
+      "delta_npr_pp": 2.1099999999999897
+    },
+    {
+      "name": "blkboystand",
+      "delta_sr_pp": 2.5499999999999967,
+      "delta_pr_pp": 4.8699999999999966,
+      "delta_npr_pp": 4.530000000000001
+    },
+    {
+      "name": "redmidboy",
+      "delta_sr_pp": 2.5499999999999967,
+      "delta_pr_pp": 1.21,
+      "delta_npr_pp": -0.6000000000000005
+    },
+    {
+      "name": "shinycarcoming",
+      "delta_sr_pp": 2.5499999999999967,
+      "delta_pr_pp": 1.9499999999999962,
+      "delta_npr_pp": 0.28000000000000247
+    },
+    {
+      "name": "boyunder2baskets",
+      "delta_sr_pp": 2.410000000000001,
+      "delta_pr_pp": 3.589999999999999,
+      "delta_npr_pp": 3.2600000000000016
+    },
+    {
+      "name": "right5thflag",
+      "delta_sr_pp": 2.37,
+      "delta_pr_pp": 3.9200000000000013,
+      "delta_npr_pp": 3.3399999999999928
+    },
+    {
+      "name": "whiteofboys",
+      "delta_sr_pp": 2.300000000000002,
+      "delta_pr_pp": 3.4500000000000086,
+      "delta_npr_pp": 2.959999999999996
+    },
+    {
+      "name": "right2ndflagformath",
+      "delta_sr_pp": 2.2299999999999986,
+      "delta_pr_pp": 2.9200000000000004,
+      "delta_npr_pp": 2.739999999999998
+    },
+    {
+      "name": "redetricycle",
+      "delta_sr_pp": 2.0600000000000063,
+      "delta_pr_pp": 7.689999999999997,
+      "delta_npr_pp": 0.9600000000000053
+    },
+    {
+      "name": "drillmaster1117",
+      "delta_sr_pp": 2.0600000000000005,
+      "delta_pr_pp": 1.699999999999996,
+      "delta_npr_pp": 1.8799999999999983
+    },
+    {
+      "name": "lefthyalinepaper2rgb",
+      "delta_sr_pp": 1.9000000000000017,
+      "delta_pr_pp": 2.8300000000000045,
+      "delta_npr_pp": 1.5699999999999992
+    },
+    {
+      "name": "lefthyalinepaperfrontpants",
+      "delta_sr_pp": 1.6699999999999937,
+      "delta_pr_pp": 2.2700000000000053,
+      "delta_npr_pp": 1.4999999999999902
+    },
+    {
+      "name": "boyatdoorturnright",
+      "delta_sr_pp": 1.649999999999996,
+      "delta_pr_pp": 3.0399999999999983,
+      "delta_npr_pp": 1.2199999999999989
+    },
+    {
+      "name": "whitefargirl",
+      "delta_sr_pp": 1.5700000000000047,
+      "delta_pr_pp": 6.45,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "boyinplatform",
+      "delta_sr_pp": 1.5000000000000013,
+      "delta_pr_pp": 0.5199999999999982,
+      "delta_npr_pp": 2.1599999999999953
+    },
+    {
+      "name": "whiterunningboy",
+      "delta_sr_pp": 1.4900000000000024,
+      "delta_pr_pp": 2.6000000000000023,
+      "delta_npr_pp": 1.1600000000000055
+    },
+    {
+      "name": "whitecarturnright",
+      "delta_sr_pp": 1.3399999999999967,
+      "delta_pr_pp": 2.9100000000000015,
+      "delta_npr_pp": 2.9100000000000015
+    },
+    {
+      "name": "carwillturn",
+      "delta_sr_pp": 1.3299999999999979,
+      "delta_pr_pp": 0.41999999999999815,
+      "delta_npr_pp": 1.0399999999999965
+    },
+    {
+      "name": "whitegirltakingchopsticks",
+      "delta_sr_pp": 1.2899999999999996,
+      "delta_pr_pp": 4.74,
+      "delta_npr_pp": 6.739999999999998
+    },
+    {
+      "name": "carcominginlight",
+      "delta_sr_pp": 1.1099999999999999,
+      "delta_pr_pp": 3.2299999999999995,
+      "delta_npr_pp": 1.2900000000000023
+    },
+    {
+      "name": "blackboy",
+      "delta_sr_pp": 1.090000000000002,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.23000000000000798
+    },
+    {
+      "name": "rightblkboystand",
+      "delta_sr_pp": 1.090000000000002,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.36000000000000476
+    },
+    {
+      "name": "leftboy2jointhe4",
+      "delta_sr_pp": 0.9899999999999992,
+      "delta_pr_pp": 1.21,
+      "delta_npr_pp": 0.7300000000000001
+    },
+    {
+      "name": "bikeinrain",
+      "delta_sr_pp": 0.979999999999992,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "basketboy",
+      "delta_sr_pp": 0.9599999999999942,
+      "delta_pr_pp": -3.53,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "manoncall",
+      "delta_sr_pp": 0.9599999999999942,
+      "delta_pr_pp": -1.1499999999999955,
+      "delta_npr_pp": 1.3399999999999967
+    },
+    {
+      "name": "1stcol4thboy",
+      "delta_sr_pp": 0.9399999999999998,
+      "delta_pr_pp": 2.0099999999999993,
+      "delta_npr_pp": 0.8899999999999998
+    },
+    {
+      "name": "foldedfolderatlefthand",
+      "delta_sr_pp": 0.8899999999999963,
+      "delta_pr_pp": 1.479999999999998,
+      "delta_npr_pp": 1.3900000000000023
+    },
+    {
+      "name": "boy2buildings",
+      "delta_sr_pp": 0.8200000000000096,
+      "delta_pr_pp": 0.10999999999999899,
+      "delta_npr_pp": 1.1800000000000033
+    },
+    {
+      "name": "manfromtoilet",
+      "delta_sr_pp": 0.8099999999999996,
+      "delta_pr_pp": 1.7199999999999993,
+      "delta_npr_pp": 0.24999999999999467
+    },
+    {
+      "name": "rightbike",
+      "delta_sr_pp": 0.8000000000000007,
+      "delta_pr_pp": -0.8900000000000019,
+      "delta_npr_pp": 1.3300000000000034
+    },
+    {
+      "name": "umbreboyoncall",
+      "delta_sr_pp": 0.7699999999999929,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 1.5599999999999947
+    },
+    {
+      "name": "3rdfatboy",
+      "delta_sr_pp": 0.7500000000000062,
+      "delta_pr_pp": 1.8100000000000005,
+      "delta_npr_pp": 1.5100000000000002
+    },
+    {
+      "name": "womanback2car",
+      "delta_sr_pp": 0.7499999999999951,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 2.100000000000002
+    },
+    {
+      "name": "girl`sblkbag",
+      "delta_sr_pp": 0.7300000000000001,
+      "delta_pr_pp": -20.14,
+      "delta_npr_pp": -4.03
+    },
+    {
+      "name": "leftmirrorlikesky",
+      "delta_sr_pp": 0.7299999999999973,
+      "delta_pr_pp": -0.34999999999999476,
+      "delta_npr_pp": -0.25999999999999357
+    },
+    {
+      "name": "rightbike-gai",
+      "delta_sr_pp": 0.7099999999999995,
+      "delta_pr_pp": 0.9599999999999942,
+      "delta_npr_pp": 0.48000000000000265
+    },
+    {
+      "name": "whitecarturnleft",
+      "delta_sr_pp": 0.6699999999999928,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "carcomeonlight",
+      "delta_sr_pp": 0.660000000000005,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "4thboywithwhite",
+      "delta_sr_pp": 0.6599999999999939,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "rightboy504",
+      "delta_sr_pp": 0.6399999999999961,
+      "delta_pr_pp": 0.20000000000000018,
+      "delta_npr_pp": 0.20000000000000018
+    },
+    {
+      "name": "rightcameraman",
+      "delta_sr_pp": 0.6300000000000028,
+      "delta_pr_pp": 4.849999999999999,
+      "delta_npr_pp": -2.3799999999999932
+    },
+    {
+      "name": "rightbluewhite",
+      "delta_sr_pp": 0.6299999999999972,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.28000000000000247
+    },
+    {
+      "name": "mantostartcar",
+      "delta_sr_pp": 0.6199999999999983,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 3.2599999999999962
+    },
+    {
+      "name": "boyscomeleft",
+      "delta_sr_pp": 0.5900000000000016,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.21999999999999797
+    },
+    {
+      "name": "bike",
+      "delta_sr_pp": 0.5800000000000027,
+      "delta_pr_pp": -0.30999999999999917,
+      "delta_npr_pp": -0.46000000000000485
+    },
+    {
+      "name": "bikeboywithumbrella",
+      "delta_sr_pp": 0.5800000000000027,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "bikefromlight",
+      "delta_sr_pp": 0.5799999999999916,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "midblkgirl",
+      "delta_sr_pp": 0.5799999999999916,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.28000000000000247
+    },
+    {
+      "name": "whitecarcomeinrain",
+      "delta_sr_pp": 0.5700000000000038,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "motogoesaloongS",
+      "delta_sr_pp": 0.5600000000000049,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.7900000000000018
+    },
+    {
+      "name": "boywalkinginsnow2",
+      "delta_sr_pp": 0.550000000000006,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "rightgirltakingcup",
+      "delta_sr_pp": 0.5299999999999999,
+      "delta_pr_pp": 0.7499999999999993,
+      "delta_npr_pp": 0.8900000000000006
+    },
+    {
+      "name": "bluebuscoming",
+      "delta_sr_pp": 0.5099999999999993,
+      "delta_pr_pp": 1.0400000000000076,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "umbrella",
+      "delta_sr_pp": 0.48000000000000265,
+      "delta_pr_pp": 1.5699999999999936,
+      "delta_npr_pp": 3.7599999999999967
+    },
+    {
+      "name": "waitresscoming",
+      "delta_sr_pp": 0.48000000000000265,
+      "delta_pr_pp": -1.6199999999999992,
+      "delta_npr_pp": 0.880000000000003
+    },
+    {
+      "name": "blkgirlumbrella",
+      "delta_sr_pp": 0.47000000000000375,
+      "delta_pr_pp": -0.5800000000000027,
+      "delta_npr_pp": 0.29000000000000137
+    },
+    {
+      "name": "swan_0109",
+      "delta_sr_pp": 0.47000000000000375,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.30000000000000027
+    },
+    {
+      "name": "blkmoto2north",
+      "delta_sr_pp": 0.43000000000000815,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.5299999999999971
+    },
+    {
+      "name": "motocomeonlight",
+      "delta_sr_pp": 0.39000000000000146,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "bikeboyturn",
+      "delta_sr_pp": 0.37000000000000366,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.6399999999999961
+    },
+    {
+      "name": "minibus",
+      "delta_sr_pp": 0.36000000000000476,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "girlafterglassdoor",
+      "delta_sr_pp": 0.34000000000000696,
+      "delta_pr_pp": 0.9699999999999931,
+      "delta_npr_pp": 0.09000000000000119
+    },
+    {
+      "name": "mandownstair",
+      "delta_sr_pp": 0.30999999999999917,
+      "delta_pr_pp": 0.7299999999999973,
+      "delta_npr_pp": 1.0099999999999998
+    },
+    {
+      "name": "silvercarturn",
+      "delta_sr_pp": 0.30999999999999917,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "girlunderthestreetlamp",
+      "delta_sr_pp": 0.30000000000000027,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.30999999999999917
+    },
+    {
+      "name": "girlinrain",
+      "delta_sr_pp": 0.29000000000000137,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "standblkboy",
+      "delta_sr_pp": 0.27000000000000357,
+      "delta_pr_pp": -0.43999999999999595,
+      "delta_npr_pp": 0.30000000000000027
+    },
+    {
+      "name": "hugboy",
+      "delta_sr_pp": 0.25999999999999357,
+      "delta_pr_pp": 0.19000000000000128,
+      "delta_npr_pp": 2.399999999999991
+    },
+    {
+      "name": "carturn117",
+      "delta_sr_pp": 0.23999999999999577,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "carlight2",
+      "delta_sr_pp": 0.20000000000000018,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 2.860000000000007
+    },
+    {
+      "name": "bluegirlbiketurn",
+      "delta_sr_pp": 0.19000000000000128,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.44999999999999485
+    },
+    {
+      "name": "rightcomingstrongboy",
+      "delta_sr_pp": 0.15000000000000013,
+      "delta_pr_pp": 0.15999999999999903,
+      "delta_npr_pp": 0.8299999999999974
+    },
+    {
+      "name": "small-gai",
+      "delta_sr_pp": 0.10999999999999899,
+      "delta_pr_pp": -0.30000000000000027,
+      "delta_npr_pp": 1.5099999999999891
+    },
+    {
+      "name": "10runone",
+      "delta_sr_pp": 0.08000000000000229,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.32999999999999696
+    },
+    {
+      "name": "darkgirl",
+      "delta_sr_pp": 0.07000000000000339,
+      "delta_pr_pp": 0.32999999999999696,
+      "delta_npr_pp": 0.32999999999999696
+    },
+    {
+      "name": "turning1strowleft2ndboy",
+      "delta_sr_pp": 0.05999999999999339,
+      "delta_pr_pp": 1.7100000000000004,
+      "delta_npr_pp": 0.8500000000000063
+    },
+    {
+      "name": "AQtruck2north",
+      "delta_sr_pp": 0.050000000000005596,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "mototurneast",
+      "delta_sr_pp": 0.039999999999995595,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "1strowrightdrillmaster",
+      "delta_sr_pp": 0.0,
+      "delta_pr_pp": -0.34000000000000696,
+      "delta_npr_pp": 0.5499999999999949
+    },
+    {
+      "name": "4men",
+      "delta_sr_pp": 0.0,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.24999999999999467
+    },
+    {
+      "name": "boyruninsnow",
+      "delta_sr_pp": 0.0,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "leftchair",
+      "delta_sr_pp": 0.0,
+      "delta_pr_pp": -3.0700000000000003,
+      "delta_npr_pp": 0.7099999999999995
+    },
+    {
+      "name": "1boycoming",
+      "delta_sr_pp": -0.029999999999996696,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "leftrushingboy",
+      "delta_sr_pp": -0.060000000000004494,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -2.0299999999999985
+    },
+    {
+      "name": "whitesuvturn",
+      "delta_sr_pp": -0.07000000000000339,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "biketurnright",
+      "delta_sr_pp": -0.08000000000000021,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "1strowleftboyturning",
+      "delta_sr_pp": -0.10000000000000009,
+      "delta_pr_pp": -0.13999999999999985,
+      "delta_npr_pp": -0.14000000000000054
+    },
+    {
+      "name": "whitegirlinlight",
+      "delta_sr_pp": -0.10000000000000009,
+      "delta_pr_pp": 0.16999999999999238,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "blackcarturn",
+      "delta_sr_pp": -0.11999999999999789,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "leftfarboycomingpicktheball",
+      "delta_sr_pp": -0.13999999999999568,
+      "delta_pr_pp": 0.10999999999999899,
+      "delta_npr_pp": 0.6599999999999939
+    },
+    {
+      "name": "darktreesboy",
+      "delta_sr_pp": -0.15999999999999348,
+      "delta_pr_pp": -0.6000000000000005,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "ab_girlchoosesbike",
+      "delta_sr_pp": -0.16999999999999238,
+      "delta_pr_pp": 0.7199999999999984,
+      "delta_npr_pp": 0.29000000000000137
+    },
+    {
+      "name": "whiteboyrightcoccergoal",
+      "delta_sr_pp": -0.17000000000000348,
+      "delta_pr_pp": 0.869999999999993,
+      "delta_npr_pp": -1.31
+    },
+    {
+      "name": "carlightcome2",
+      "delta_sr_pp": -0.20000000000000018,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "catbrown2",
+      "delta_sr_pp": -0.20999999999999908,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "basketballathand",
+      "delta_sr_pp": -0.21999999999999797,
+      "delta_pr_pp": -6.25,
+      "delta_npr_pp": 1.5600000000000003
+    },
+    {
+      "name": "rainycarcome_ab",
+      "delta_sr_pp": -0.28000000000000247,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "bikeboy",
+      "delta_sr_pp": -0.29000000000000137,
+      "delta_pr_pp": -0.8799999999999919,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "11runtwo",
+      "delta_sr_pp": -0.30000000000000027,
+      "delta_pr_pp": -1.3599999999999945,
+      "delta_npr_pp": -0.34000000000000696
+    },
+    {
+      "name": "boyfromdark",
+      "delta_sr_pp": -0.30000000000000027,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.34999999999999476
+    },
+    {
+      "name": "besom3",
+      "delta_sr_pp": -0.30999999999999917,
+      "delta_pr_pp": 3.190000000000004,
+      "delta_npr_pp": 0.32000000000000917
+    },
+    {
+      "name": "blueboy421",
+      "delta_sr_pp": -0.30999999999999917,
+      "delta_pr_pp": 0.7099999999999995,
+      "delta_npr_pp": -2.849999999999997
+    },
+    {
+      "name": "blueboy",
+      "delta_sr_pp": -0.31999999999999806,
+      "delta_pr_pp": 3.63,
+      "delta_npr_pp": 3.0299999999999994
+    },
+    {
+      "name": "redcarcominginlight",
+      "delta_sr_pp": -0.34999999999999476,
+      "delta_pr_pp": -1.1399999999999966,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "3bike1",
+      "delta_sr_pp": -0.37000000000000366,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 2.5700000000000056
+    },
+    {
+      "name": "girlfromlight_quezhen",
+      "delta_sr_pp": -0.37000000000000366,
+      "delta_pr_pp": 0.39000000000000146,
+      "delta_npr_pp": -0.39000000000000146
+    },
+    {
+      "name": "ab_bikeoccluded",
+      "delta_sr_pp": -0.39000000000000146,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "bike2left",
+      "delta_sr_pp": -0.39000000000000146,
+      "delta_pr_pp": -0.7699999999999929,
+      "delta_npr_pp": -1.9400000000000084
+    },
+    {
+      "name": "bikeboyturntimes",
+      "delta_sr_pp": -0.39000000000000146,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "broom",
+      "delta_sr_pp": -0.47000000000000375,
+      "delta_pr_pp": -2.2299999999999986,
+      "delta_npr_pp": 0.18000000000000238
+    },
+    {
+      "name": "bawgirl",
+      "delta_sr_pp": -0.48000000000000265,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "belowdarkgirl",
+      "delta_sr_pp": -0.5000000000000004,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "caronlight",
+      "delta_sr_pp": -0.5000000000000004,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "rightbottlecomes",
+      "delta_sr_pp": -0.5400000000000016,
+      "delta_pr_pp": 0.14000000000000123,
+      "delta_npr_pp": 0.940000000000002
+    },
+    {
+      "name": "boyride2path",
+      "delta_sr_pp": -0.5599999999999994,
+      "delta_pr_pp": 2.9299999999999993,
+      "delta_npr_pp": 0.8700000000000041
+    },
+    {
+      "name": "blkboytakesumbrella",
+      "delta_sr_pp": -0.5699999999999927,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "boyinsnowfield3",
+      "delta_sr_pp": -0.5900000000000016,
+      "delta_pr_pp": -2.1100000000000008,
+      "delta_npr_pp": -3.3200000000000007
+    },
+    {
+      "name": "boy2trees",
+      "delta_sr_pp": -0.6399999999999961,
+      "delta_pr_pp": 0.49000000000000155,
+      "delta_npr_pp": -0.9800000000000031
+    },
+    {
+      "name": "midof3girls",
+      "delta_sr_pp": -0.6500000000000061,
+      "delta_pr_pp": -1.1299999999999977,
+      "delta_npr_pp": -3.410000000000002
+    },
+    {
+      "name": "darkcarturn",
+      "delta_sr_pp": -0.6800000000000028,
+      "delta_pr_pp": -2.3800000000000043,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "3thmoto",
+      "delta_sr_pp": -0.6900000000000017,
+      "delta_pr_pp": -3.849999999999998,
+      "delta_npr_pp": -0.9600000000000053
+    },
+    {
+      "name": "boydownplatform",
+      "delta_sr_pp": -0.7199999999999984,
+      "delta_pr_pp": -0.40000000000000036,
+      "delta_npr_pp": -1.860000000000006
+    },
+    {
+      "name": "yellowgirl118",
+      "delta_sr_pp": -0.7199999999999984,
+      "delta_pr_pp": -4.239999999999999,
+      "delta_npr_pp": -0.8499999999999952
+    },
+    {
+      "name": "raincarturn",
+      "delta_sr_pp": -0.7399999999999962,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.9000000000000008
+    },
+    {
+      "name": "1blackteacher",
+      "delta_sr_pp": -0.7500000000000062,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -0.11999999999999789
+    },
+    {
+      "name": "boytakingplate2left",
+      "delta_sr_pp": -0.7600000000000051,
+      "delta_pr_pp": -2.290000000000003,
+      "delta_npr_pp": -4.200000000000004
+    },
+    {
+      "name": "bike2trees",
+      "delta_sr_pp": -0.7799999999999918,
+      "delta_pr_pp": -1.3700000000000045,
+      "delta_npr_pp": -2.739999999999998
+    },
+    {
+      "name": "carbehindtrees",
+      "delta_sr_pp": -0.8000000000000007,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "redroadlatboy",
+      "delta_sr_pp": -0.8299999999999974,
+      "delta_pr_pp": 0.6799999999999917,
+      "delta_npr_pp": -1.649999999999996
+    },
+    {
+      "name": "midrunboywithwhite",
+      "delta_sr_pp": -0.8500000000000008,
+      "delta_pr_pp": -1.3600000000000056,
+      "delta_npr_pp": -2.2599999999999953
+    },
+    {
+      "name": "boyss",
+      "delta_sr_pp": -0.8600000000000052,
+      "delta_pr_pp": 0.27000000000000357,
+      "delta_npr_pp": -0.5300000000000027
+    },
+    {
+      "name": "girlof2leaders",
+      "delta_sr_pp": -0.9000000000000008,
+      "delta_pr_pp": -1.9299999999999984,
+      "delta_npr_pp": -1.319999999999999
+    },
+    {
+      "name": "blackboyoncall",
+      "delta_sr_pp": -0.9500000000000064,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "blktribikecome",
+      "delta_sr_pp": -0.9700000000000042,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -2.1199999999999997
+    },
+    {
+      "name": "2girl",
+      "delta_sr_pp": -1.0099999999999998,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -3.599999999999992
+    },
+    {
+      "name": "moto",
+      "delta_sr_pp": -1.0099999999999998,
+      "delta_pr_pp": 1.1800000000000033,
+      "delta_npr_pp": 0.39000000000000146
+    },
+    {
+      "name": "yellowskirt",
+      "delta_sr_pp": -1.0199999999999987,
+      "delta_pr_pp": 2.7699999999999947,
+      "delta_npr_pp": 0.5600000000000049
+    },
+    {
+      "name": "leftopenexersicebook",
+      "delta_sr_pp": -1.040000000000002,
+      "delta_pr_pp": -2.940000000000004,
+      "delta_npr_pp": -1.1799999999999977
+    },
+    {
+      "name": "3pinkleft",
+      "delta_sr_pp": -1.0400000000000076,
+      "delta_pr_pp": -0.43000000000000815,
+      "delta_npr_pp": -0.8499999999999952
+    },
+    {
+      "name": "redboygoright",
+      "delta_sr_pp": -1.0800000000000032,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -1.3399999999999967
+    },
+    {
+      "name": "bikegoindark",
+      "delta_sr_pp": -1.1899999999999966,
+      "delta_pr_pp": -1.4100000000000001,
+      "delta_npr_pp": -0.7000000000000006
+    },
+    {
+      "name": "blackgirl",
+      "delta_sr_pp": -1.1900000000000022,
+      "delta_pr_pp": 0.46000000000000485,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "pingpingpad3",
+      "delta_sr_pp": -1.2199999999999989,
+      "delta_pr_pp": -0.9899999999999909,
+      "delta_npr_pp": -1.2400000000000078
+    },
+    {
+      "name": "lefterbike",
+      "delta_sr_pp": -1.2299999999999978,
+      "delta_pr_pp": 4.779999999999996,
+      "delta_npr_pp": 3.179999999999994
+    },
+    {
+      "name": "leftpingpongball",
+      "delta_sr_pp": -1.229999999999999,
+      "delta_pr_pp": -3.0299999999999994,
+      "delta_npr_pp": -1.5200000000000005
+    },
+    {
+      "name": "boyshead9684",
+      "delta_sr_pp": -1.2499999999999956,
+      "delta_pr_pp": -1.0700000000000043,
+      "delta_npr_pp": -0.880000000000003
+    },
+    {
+      "name": "baggirl",
+      "delta_sr_pp": -1.3700000000000045,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -1.8000000000000016
+    },
+    {
+      "name": "darkouterwhiteboy",
+      "delta_sr_pp": -1.5300000000000091,
+      "delta_pr_pp": -0.5299999999999971,
+      "delta_npr_pp": 3.3399999999999985
+    },
+    {
+      "name": "blackdown",
+      "delta_sr_pp": -1.539999999999997,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -1.6100000000000003
+    },
+    {
+      "name": "lastleftgirl",
+      "delta_sr_pp": -1.5399999999999996,
+      "delta_pr_pp": -1.6999999999999988,
+      "delta_npr_pp": -1.7000000000000002
+    },
+    {
+      "name": "girllongskirt",
+      "delta_sr_pp": -1.6599999999999948,
+      "delta_pr_pp": -3.289999999999993,
+      "delta_npr_pp": -1.970000000000005
+    },
+    {
+      "name": "umbrellawillopen",
+      "delta_sr_pp": -1.7299999999999982,
+      "delta_pr_pp": -2.4499999999999966,
+      "delta_npr_pp": -2.6599999999999957
+    },
+    {
+      "name": "blkboyback",
+      "delta_sr_pp": -1.8100000000000005,
+      "delta_pr_pp": -3.510000000000002,
+      "delta_npr_pp": -2.9200000000000004
+    },
+    {
+      "name": "3men",
+      "delta_sr_pp": -1.9499999999999962,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "lowerfoamboard",
+      "delta_sr_pp": -2.0199999999999996,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -3.0299999999999994
+    },
+    {
+      "name": "2runseven",
+      "delta_sr_pp": -2.100000000000002,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "blkboybetweenredandwhite",
+      "delta_sr_pp": -2.1599999999999953,
+      "delta_pr_pp": -1.9799999999999929,
+      "delta_npr_pp": -7.609999999999994
+    },
+    {
+      "name": "whitecarturn683",
+      "delta_sr_pp": -2.2299999999999986,
+      "delta_pr_pp": -4.830000000000001,
+      "delta_npr_pp": -2.9299999999999993
+    },
+    {
+      "name": "leftuphand",
+      "delta_sr_pp": -2.2499999999999964,
+      "delta_pr_pp": -0.7499999999999951,
+      "delta_npr_pp": -0.6000000000000005
+    },
+    {
+      "name": "mangetsoff",
+      "delta_sr_pp": -2.3299999999999987,
+      "delta_pr_pp": 3.1500000000000083,
+      "delta_npr_pp": 0.38999999999999035
+    },
+    {
+      "name": "midredboy",
+      "delta_sr_pp": -2.389999999999992,
+      "delta_pr_pp": -3.0899999999999928,
+      "delta_npr_pp": -2.859999999999996
+    },
+    {
+      "name": "girl2left3man1",
+      "delta_sr_pp": -2.4900000000000033,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": -9.930000000000005
+    },
+    {
+      "name": "rightdarksingleman",
+      "delta_sr_pp": -2.660000000000007,
+      "delta_pr_pp": -3.180000000000005,
+      "delta_npr_pp": -1.9399999999999973
+    },
+    {
+      "name": "whitefardown",
+      "delta_sr_pp": -2.7000000000000024,
+      "delta_pr_pp": -4.479999999999995,
+      "delta_npr_pp": -2.9799999999999938
+    },
+    {
+      "name": "leftexcersicebookyellow",
+      "delta_sr_pp": -2.72,
+      "delta_pr_pp": -4.899999999999999,
+      "delta_npr_pp": -3.809999999999997
+    },
+    {
+      "name": "mototaking2boys306",
+      "delta_sr_pp": -2.739999999999998,
+      "delta_pr_pp": -0.9800000000000031,
+      "delta_npr_pp": 0.31999999999999806
+    },
+    {
+      "name": "rightblkfatboyleftwhite",
+      "delta_sr_pp": -2.8300000000000045,
+      "delta_pr_pp": -4.919999999999991,
+      "delta_npr_pp": -4.920000000000002
+    },
+    {
+      "name": "rightblkboy4386",
+      "delta_sr_pp": -2.949999999999997,
+      "delta_pr_pp": -2.7900000000000036,
+      "delta_npr_pp": -3.2299999999999995
+    },
+    {
+      "name": "bikeboyintodark",
+      "delta_sr_pp": -2.9600000000000017,
+      "delta_pr_pp": -3.1499999999999972,
+      "delta_npr_pp": -6.1700000000000035
+    },
+    {
+      "name": "motowithbluetop",
+      "delta_sr_pp": -3.1100000000000017,
+      "delta_pr_pp": 0.0,
+      "delta_npr_pp": 0.0
+    },
+    {
+      "name": "firstexercisebook",
+      "delta_sr_pp": -3.1299999999999994,
+      "delta_pr_pp": -4.570000000000002,
+      "delta_npr_pp": -4.139999999999999
+    },
+    {
+      "name": "minibusgoes2left",
+      "delta_sr_pp": -3.180000000000005,
+      "delta_pr_pp": -8.870000000000001,
+      "delta_npr_pp": -5.609999999999992
+    },
+    {
+      "name": "boylefttheNo_9boy",
+      "delta_sr_pp": -3.489999999999993,
+      "delta_pr_pp": -3.760000000000008,
+      "delta_npr_pp": -4.049999999999998
+    },
+    {
+      "name": "umbrellabyboy",
+      "delta_sr_pp": -3.500000000000003,
+      "delta_pr_pp": -1.4800000000000035,
+      "delta_npr_pp": -1.6900000000000026
+    },
+    {
+      "name": "mansimiliar",
+      "delta_sr_pp": -3.849999999999998,
+      "delta_pr_pp": -5.119999999999991,
+      "delta_npr_pp": -4.400000000000004
+    },
+    {
+      "name": "foamatgirl`srighthand",
+      "delta_sr_pp": -4.020000000000001,
+      "delta_pr_pp": -7.250000000000001,
+      "delta_npr_pp": -7.77
+    },
+    {
+      "name": "shinycarcoming2",
+      "delta_sr_pp": -4.2800000000000065,
+      "delta_pr_pp": -0.48999999999999044,
+      "delta_npr_pp": -0.34000000000000696
+    },
+    {
+      "name": "bikeboyright",
+      "delta_sr_pp": -4.400000000000004,
+      "delta_pr_pp": -5.999999999999995,
+      "delta_npr_pp": -5.789999999999996
+    },
+    {
+      "name": "boyoncall",
+      "delta_sr_pp": -4.669999999999996,
+      "delta_pr_pp": -28.71,
+      "delta_npr_pp": -2.9100000000000015
+    },
+    {
+      "name": "farfatboy",
+      "delta_sr_pp": -4.720000000000002,
+      "delta_pr_pp": 1.970000000000005,
+      "delta_npr_pp": -7.879999999999998
+    },
+    {
+      "name": "blkboy`shead",
+      "delta_sr_pp": -4.759999999999998,
+      "delta_pr_pp": -5.690000000000007,
+      "delta_npr_pp": -5.499999999999994
+    },
+    {
+      "name": "girlrightthewautress",
+      "delta_sr_pp": -4.880000000000006,
+      "delta_pr_pp": -6.169999999999998,
+      "delta_npr_pp": -4.21999999999999
+    },
+    {
+      "name": "bottlebetweenboy`sfeet",
+      "delta_sr_pp": -4.8900000000000015,
+      "delta_pr_pp": -5.530000000000001,
+      "delta_npr_pp": -4.940000000000001
+    },
+    {
+      "name": "boyaftertree",
+      "delta_sr_pp": -5.140000000000001,
+      "delta_pr_pp": -5.880000000000008,
+      "delta_npr_pp": -7.850000000000001
+    },
+    {
+      "name": "boyleftblkrunning2crowd",
+      "delta_sr_pp": -5.289999999999995,
+      "delta_pr_pp": -8.68,
+      "delta_npr_pp": -5.400000000000005
+    },
+    {
+      "name": "AQgirlwalkinrain",
+      "delta_sr_pp": -5.480000000000001,
+      "delta_pr_pp": -6.719999999999993,
+      "delta_npr_pp": -6.7299999999999915
+    },
+    {
+      "name": "boy2basketballground",
+      "delta_sr_pp": -6.270000000000003,
+      "delta_pr_pp": -4.859999999999998,
+      "delta_npr_pp": -4.849999999999999
+    },
+    {
+      "name": "runningcameragirl",
+      "delta_sr_pp": -6.330000000000002,
+      "delta_pr_pp": -6.730000000000002,
+      "delta_npr_pp": -9.850000000000003
+    },
+    {
+      "name": "littelbabycryingforahug",
+      "delta_sr_pp": -6.979999999999997,
+      "delta_pr_pp": -8.469999999999999,
+      "delta_npr_pp": -9.960000000000003
+    },
+    {
+      "name": "ballshootatthebasket3times",
+      "delta_sr_pp": -7.010000000000005,
+      "delta_pr_pp": -10.559999999999992,
+      "delta_npr_pp": -5.979999999999997
+    },
+    {
+      "name": "boyaroundtrees",
+      "delta_sr_pp": -7.390000000000002,
+      "delta_pr_pp": -9.28,
+      "delta_npr_pp": -7.980000000000009
+    },
+    {
+      "name": "basketball849",
+      "delta_sr_pp": -7.519999999999999,
+      "delta_pr_pp": -10.249999999999998,
+      "delta_npr_pp": -9.42
+    },
+    {
+      "name": "blkboylefttheNo_21",
+      "delta_sr_pp": -7.740000000000002,
+      "delta_pr_pp": -8.709999999999996,
+      "delta_npr_pp": -8.990000000000004
+    },
+    {
+      "name": "leftunderbasket",
+      "delta_sr_pp": -7.95,
+      "delta_pr_pp": -6.190000000000001,
+      "delta_npr_pp": -7.400000000000001
+    },
+    {
+      "name": "boywaitgirl",
+      "delta_sr_pp": -8.150000000000002,
+      "delta_pr_pp": -9.219999999999995,
+      "delta_npr_pp": -8.389999999999997
+    },
+    {
+      "name": "midgreyboyrunningcoming",
+      "delta_sr_pp": -10.370000000000001,
+      "delta_pr_pp": -14.669999999999995,
+      "delta_npr_pp": -15.43000000000001
+    },
+    {
+      "name": "boy`sheadingreycol",
+      "delta_sr_pp": -10.390000000000002,
+      "delta_pr_pp": -12.639999999999995,
+      "delta_npr_pp": -13.01
+    },
+    {
+      "name": "whiteskirtgirlcomingfromgoal",
+      "delta_sr_pp": -11.080000000000002,
+      "delta_pr_pp": -16.379999999999995,
+      "delta_npr_pp": -10.88
+    },
+    {
+      "name": "leftmirrorside",
+      "delta_sr_pp": -11.63,
+      "delta_pr_pp": -14.429999999999998,
+      "delta_npr_pp": -12.410000000000004
+    },
+    {
+      "name": "leftboyoutofthetroop",
+      "delta_sr_pp": -12.39,
+      "delta_pr_pp": -16.259999999999998,
+      "delta_npr_pp": -15.189999999999992
+    },
+    {
+      "name": "blkcaratfrontbluebus",
+      "delta_sr_pp": -14.93,
+      "delta_pr_pp": -18.85,
+      "delta_npr_pp": -19.89
+    },
+    {
+      "name": "middrillmaster",
+      "delta_sr_pp": -17.75999999999999,
+      "delta_pr_pp": -24.090000000000007,
+      "delta_npr_pp": -23.94
+    },
+    {
+      "name": "ab_whiteboywithbluebag",
+      "delta_sr_pp": -19.450000000000006,
+      "delta_pr_pp": -20.07,
+      "delta_npr_pp": -24.519999999999996
+    },
+    {
+      "name": "blkhairgirltakingblkbag",
+      "delta_sr_pp": -28.62,
+      "delta_pr_pp": -34.93,
+      "delta_npr_pp": -36.52
+    },
+    {
+      "name": "whiteridingbike",
+      "delta_sr_pp": -31.620000000000005,
+      "delta_pr_pp": -50.82,
+      "delta_npr_pp": -43.529999999999994
+    },
+    {
+      "name": "girldownstairfromlight",
+      "delta_sr_pp": -36.77,
+      "delta_pr_pp": -62.45,
+      "delta_npr_pp": -45.03
+    }
+  ]
+}

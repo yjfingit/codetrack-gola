@@ -1,0 +1,78 @@
+[
+  {
+    "trial": "rec1e3_gain20",
+    "steps": 399,
+    "loss_last": 11.5172,
+    "loss_min": 8.5926,
+    "loss_first": 12.0011,
+    "diag": {
+      "Loss/diag": 1.6399,
+      "Loss/rec": 0.014,
+      "Loss/gain": 0.0272,
+      "Error/q_std": 0.0075,
+      "Error/d_input": 0.0802,
+      "Error/d_after": 0.0747,
+      "Error/gain_total": 0.0059,
+      "Error/q_mean": 0.7602
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "rec15e4_gain40",
+    "steps": 399,
+    "loss_last": 11.7051,
+    "loss_min": 8.5808,
+    "loss_first": 12.0011,
+    "diag": {
+      "Loss/diag": 1.6397,
+      "Loss/rec": 0.0163,
+      "Loss/gain": 0.0263,
+      "Error/q_std": 0.0083,
+      "Error/d_input": 0.0802,
+      "Error/d_after": 0.0743,
+      "Error/gain_total": 0.0069,
+      "Error/q_mean": 0.7605
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "rec1e3_gain40",
+    "steps": 399,
+    "loss_last": 11.7956,
+    "loss_min": 8.7157,
+    "loss_first": 12.0011,
+    "diag": {
+      "Loss/diag": 1.6339,
+      "Loss/rec": 0.0158,
+      "Loss/gain": 0.0239,
+      "Error/q_std": 0.0087,
+      "Error/d_input": 0.0802,
+      "Error/d_after": 0.074,
+      "Error/gain_total": 0.008,
+      "Error/q_mean": 0.7617
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "rec2e3_gain80",
+    "steps": 399,
+    "loss_last": 12.7307,
+    "loss_min": 8.8848,
+    "loss_first": 12.0011,
+    "diag": {
+      "Loss/diag": 1.6449,
+      "Loss/rec": 0.019,
+      "Loss/gain": 0.0246,
+      "Error/q_std": 0.0044,
+      "Error/d_input": 0.0802,
+      "Error/d_after": 0.0736,
+      "Error/gain_total": 0.0079,
+      "Error/q_mean": 0.7587
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  }
+]

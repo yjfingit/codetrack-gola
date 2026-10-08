@@ -1,0 +1,75 @@
+{
+  "probe": "diagnosis_direction_v1",
+  "checkpoint": "_probe/grid/s1_h15_soups/checkpoints/all4.bin",
+  "damage_region": [
+    140,
+    196,
+    140,
+    196
+  ],
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "tokens": 256,
+  "topk": 32,
+  "damage_fraction": 0.05859375,
+  "error_mean": 0.0011900721583515406,
+  "error_std": 0.005169766489416361,
+  "q_mean": 0.781039297580719,
+  "q_std": 0.006416788324713707,
+  "q_logits_std": 0.03754662349820137,
+  "s_std": 0.20577938854694366,
+  "candidates": {
+    "q": {
+      "auroc": 0.5709903240203857,
+      "overlap": 0.06992504745721817,
+      "topk_gap": 0.009801685810089111,
+      "score_std": 0.006416788324713707
+    },
+    "neg_q": {
+      "auroc": 0.4290069043636322,
+      "overlap": 0.03163021802902222,
+      "topk_gap": 0.009674131870269775,
+      "score_std": 0.006416788324713707
+    },
+    "q_logits": {
+      "auroc": 0.5709903240203857,
+      "overlap": 0.06992504745721817,
+      "topk_gap": 0.05792689323425293,
+      "score_std": 0.03754662349820137
+    },
+    "neg_q_logits": {
+      "auroc": 0.4290069043636322,
+      "overlap": 0.03163021802902222,
+      "topk_gap": 0.056029438972473145,
+      "score_std": 0.03754662349820137
+    },
+    "s_to_token": {
+      "auroc": 0.4290456473827362,
+      "overlap": 0.03163021802902222,
+      "topk_gap": 0.05602338910102844,
+      "score_std": 0.03754361718893051
+    },
+    "neg_s_to_token": {
+      "auroc": 0.5709543824195862,
+      "overlap": 0.06992504745721817,
+      "topk_gap": 0.05792323499917984,
+      "score_std": 0.03754361718893051
+    }
+  },
+  "check_corr": {
+    "mean_offdiag": -0.013428732752799988,
+    "median_offdiag": -0.03776618093252182,
+    "abs_mean_offdiag": 0.3919926583766937,
+    "max_abs_offdiag": 0.9573007225990295
+  }
+}

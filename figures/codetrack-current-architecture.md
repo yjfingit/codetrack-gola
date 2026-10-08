@@ -1,0 +1,111 @@
+# CodeTrack Current Architecture
+
+当前代码对应的 CodeTrack 数据流：GOLA-DINOv2-B 提取 RGB/TIR 与模板 token，稀疏 H 校验图和 syndrome/BP 诊断 token 可靠度，运动先验与可靠历史提供旁信息，SATR 只对可疑位置进行 Tanner 残差纠错，最后复用原始 GOLA 跟踪头。
+
+```mermaid
+flowchart LR
+    %% GPU2 SATR full-joint checkpoint:
+    %% _probe/full_joint_satr/.../checkpoint/epoch_05/model.bin
+    %% Training-time settings: abstain=false, topk=32, satr_rounds=3,
+    %% residual_gate_init=-3.0, up_init_std=0.002, explicit_syndrome_weight=0.
+    classDef input fill:#E8F5E9,stroke:#2E7D32,color:#1B5E20,stroke-width:1.5px
+    classDef backbone fill:#E3F2FD,stroke:#1565C0,color:#0D47A1,stroke-width:1.5px
+    classDef check fill:#FFF3E0,stroke:#EF6C00,color:#E65100,stroke-width:1.5px
+    classDef temporal fill:#E0F7FA,stroke:#00838F,color:#006064,stroke-width:1.5px
+    classDef repair fill:#F3E5F5,stroke:#6A1B9A,color:#4A148C,stroke-width:1.5px
+    classDef output fill:#FCE4EC,stroke:#AD1457,color:#880E4F,stroke-width:1.5px
+    classDef note fill:#FAFAFA,stroke:#757575,color:#424242,stroke-dasharray:4 3
+
+    RGB[RGB 搜索观测\n可见光]:::input
+    TIR[TIR 搜索观测\n红外]:::input
+    Z[第一帧模板 + 在线模板]:::input
+
+    GOLA[GOLA-DINOv2-B\npatch embedding + 12 blocks + LayerNorm]:::backbone
+    RGB --> GOLA
+    TIR --> GOLA
+    Z --> GOLA
+
+    FL[F_L 六路 token 特征\nZ_RGB, X_RGB, Z_TIR, X_TIR, Z_on, D_TIR]:::backbone
+    GOLA --> FL
+
+    XR[X_RGB\nRGB 原始搜索 token]:::input
+    XT[X_TIR\nTIR 原始搜索 token\n主跟踪特征]:::input
+    TZ[模板上下文\n初始/在线 RGB-TIR]:::input
+    FL --> XR
+    FL --> XT
+    FL --> TZ
+
+    H[稀疏视觉校验图 H\n64 checks x 256 tokens\n局部空间连接 + 最小列度]:::check
+    PROJ[跨模态投影\nU: RGB projection\nR: TIR projection + template]:::check
+    RES[跨模态校验残差\nU - R\nGPU2 训练使用基础残差]:::check
+    XR --> PROJ
+    XT --> PROJ
+    TZ --> PROJ
+    PROJ --> RES
+    H --> RES
+
+    SYN[综合征 syndrome\nH 聚合 check evidence\n差异/余弦/残差能量]:::check
+    RES --> SYN
+    H --> SYN
+
+    BP[神经 BP / 置信传播\nTanner check-to-variable messages\n输出 token 错误概率 q]:::check
+    SYN --> BP
+    H --> BP
+
+    MOT[Kalman 运动先验\n预测目标位置 + 不确定度\n运动图/马氏距离]:::temporal
+    MEM[可靠历史记忆\n高置信帧才写入\n历史 token + 时间旁信息]:::temporal
+    HEAD0[原始 GOLA Head\nscore map + boxes]:::backbone
+    HEAD0 -. 当前帧置信度/框 .-> MOT
+    HEAD0 -. 高置信度历史准入 .-> MEM
+    MOT --> MEM
+    XT --> MEM
+    BP --> MEM
+
+    GATE{可靠度判断\nq / 运动不确定度 / 历史可靠度}:::check
+    BP --> GATE
+    MOT --> GATE
+    MEM --> GATE
+
+    SATR[SATR Tanner 纠错\n3 轮展开消息传递\n旁信息：另一模态 + H 邻居 + 历史 + 运动\n固定最多 32 个 q 最高 token\n输出残差 Delta X]:::repair
+    GATE --> SATR
+    XR --> SATR
+    XT --> SATR
+    H --> SATR
+    MOT --> SATR
+    MEM --> SATR
+
+    WRITE[门控残差写回\nX_out = X_TIR + q_i * gate * Delta X_i\n仅 q Top-32 位置写回\nGPU2 未启用拒绝译码]:::repair
+    XT --> WRITE
+    SATR --> WRITE
+    GATE --> WRITE
+
+    TRACK[原始 GOLA 跟踪头\n分类/框回归\n跟踪输出]:::output
+    WRITE --> TRACK
+    TRACK --> HEAD0
+
+    LOSS[GPU2 联合训练监督\n跟踪损失\nsyndrome/BP 定位损失\n恢复误差与恢复增益\n正常 token 保持 + 记忆/运动约束\n完整训练 5 个 epoch checkpoint]:::note
+    LOSS -. 训练 .-> BP
+    LOSS -. 训练 .-> SATR
+    LOSS -. 训练 .-> TRACK
+
+    subgraph CHECK[通信可靠性检测与纠错主线]
+        H
+        PROJ
+        RES
+        SYN
+        BP
+        GATE
+        SATR
+        WRITE
+    end
+
+    subgraph REDUNDANCY[可用冗余来源]
+        XR
+        XT
+        TZ
+        MOT
+        MEM
+    end
+
+    linkStyle default stroke:#455A64,stroke-width:1.4px
+```

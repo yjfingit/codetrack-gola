@@ -1,0 +1,1 @@
+gate_target|lr=1e-4,lambda_post_syndrome=0.0,lambda_gain=0.2,lambda_rec=0.2,lambda_gate=0.1,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=40,sched_warmup_updates=40,samples_per_epoch=51200

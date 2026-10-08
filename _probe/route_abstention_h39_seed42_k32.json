@@ -1,0 +1,236 @@
+{
+  "probe": "route_abstention_v1",
+  "checkpoint": "_probe/grid/s1_h14_robust50/out/seed42/GOLA-codetrack_s1-mixin-_grid_seed42-2026.10.04-18.53.50-876394/checkpoint/epoch_00/model.bin",
+  "topk": 32,
+  "thresholds": [
+    -1.0,
+    0.0,
+    0.5,
+    1.0,
+    1.5
+  ],
+  "regions": [
+    "center",
+    "top_left",
+    "top_right",
+    "bottom_right"
+  ],
+  "rows": [
+    {
+      "region": "center",
+      "threshold": "learned",
+      "active_fraction": NaN,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "center",
+      "threshold": -1.0,
+      "active_fraction": 0.8187500238418579,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "center",
+      "threshold": 0.0,
+      "active_fraction": 0.48554688692092896,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "center",
+      "threshold": 0.5,
+      "active_fraction": 0.32539063692092896,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "center",
+      "threshold": 1.0,
+      "active_fraction": 0.18867187201976776,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "center",
+      "threshold": 1.5,
+      "active_fraction": 0.07460937649011612,
+      "gain_total": 0.00017171066429000348,
+      "gain_damage": 0.0006522875046357512,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07333090156316757
+    },
+    {
+      "region": "top_left",
+      "threshold": "learned",
+      "active_fraction": NaN,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_left",
+      "threshold": -1.0,
+      "active_fraction": 0.828906238079071,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_left",
+      "threshold": 0.0,
+      "active_fraction": 0.47265625,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_left",
+      "threshold": 0.5,
+      "active_fraction": 0.3203125,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_left",
+      "threshold": 1.0,
+      "active_fraction": 0.19023437798023224,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_left",
+      "threshold": 1.5,
+      "active_fraction": 0.08125000447034836,
+      "gain_total": -0.0002748682745732367,
+      "gain_damage": -0.000177989830262959,
+      "d_input_damage": 0.017583657056093216,
+      "d_final_damage": 0.01776164583861828
+    },
+    {
+      "region": "top_right",
+      "threshold": "learned",
+      "active_fraction": NaN,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "top_right",
+      "threshold": -1.0,
+      "active_fraction": 0.830078125,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "top_right",
+      "threshold": 0.0,
+      "active_fraction": 0.470703125,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "top_right",
+      "threshold": 0.5,
+      "active_fraction": 0.32109376788139343,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "top_right",
+      "threshold": 1.0,
+      "active_fraction": 0.189453125,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "top_right",
+      "threshold": 1.5,
+      "active_fraction": 0.08359374850988388,
+      "gain_total": -0.00027681802748702466,
+      "gain_damage": -3.9094509702408686e-05,
+      "d_input_damage": 0.01310092955827713,
+      "d_final_damage": 0.013140024617314339
+    },
+    {
+      "region": "bottom_right",
+      "threshold": "learned",
+      "active_fraction": NaN,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    },
+    {
+      "region": "bottom_right",
+      "threshold": -1.0,
+      "active_fraction": 0.828906238079071,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    },
+    {
+      "region": "bottom_right",
+      "threshold": 0.0,
+      "active_fraction": 0.46992188692092896,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    },
+    {
+      "region": "bottom_right",
+      "threshold": 0.5,
+      "active_fraction": 0.3203125,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    },
+    {
+      "region": "bottom_right",
+      "threshold": 1.0,
+      "active_fraction": 0.18906250596046448,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    },
+    {
+      "region": "bottom_right",
+      "threshold": 1.5,
+      "active_fraction": 0.08359374850988388,
+      "gain_total": -0.00027365380083210766,
+      "gain_damage": -0.00024086952907964587,
+      "d_input_damage": 0.013695835135877132,
+      "d_final_damage": 0.013936704024672508
+    }
+  ]
+}

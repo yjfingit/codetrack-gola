@@ -1,0 +1,63 @@
+{
+  "probe": "satr_convergence_v1",
+  "seed": 42,
+  "steps": 2,
+  "lr": 0.0003,
+  "topk": 32,
+  "sequences": [
+    "biketurndark",
+    "umbrellainyellowhand",
+    "whiteboy`head",
+    "abreastinnerboy",
+    "rightbiggreenboy",
+    "the2ndboyunderbasket",
+    "the4thboystandby",
+    "theleftestrunningboy",
+    "rightbackcup",
+    "whitebetweenblackandblue"
+  ],
+  "regions": [
+    "center",
+    "top_left",
+    "top_right",
+    "bottom_right"
+  ],
+  "damage_fraction": 0.09531249850988388,
+  "best_step": 1,
+  "best_score": 0.014223834658041598,
+  "history": [
+    {
+      "loss": 0.40170860290527344,
+      "diag": 0.31019580364227295,
+      "rec": 0.036882683634757996,
+      "gain": 0.0028126873075962067,
+      "pres": 0.007124285213649273,
+      "d_input": 0.0396953709423542,
+      "d_after": 0.036882683634757996,
+      "gain_total": 0.0028126873075962067,
+      "topk_overlap": 0.1946721374988556,
+      "q_pos": 0.07610785216093063,
+      "q_neg": 0.06769724190235138,
+      "q_auroc": NaN,
+      "step": 0,
+      "grad_norm": 1.1223984956741333
+    },
+    {
+      "loss": 0.3983379900455475,
+      "diag": 0.30487576127052307,
+      "rec": 0.03761880844831467,
+      "gain": 0.0020765624940395355,
+      "pres": 0.004535115323960781,
+      "d_input": 0.0396953709423542,
+      "d_after": 0.03761880844831467,
+      "gain_total": 0.0020765624940395355,
+      "topk_overlap": 0.24385246634483337,
+      "q_pos": 0.10762021690607071,
+      "q_neg": 0.09633532166481018,
+      "q_auroc": NaN,
+      "step": 1,
+      "grad_norm": 0.5410534143447876
+    }
+  ],
+  "checkpoint": "_probe/satr_convergence_gpu4/test.safetensors"
+}

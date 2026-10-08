@@ -1,0 +1,77 @@
+{
+  "stage": 1,
+  "name": "H12 seed45",
+  "decision": "NO-GO",
+  "checks": [
+    {
+      "name": "no NaN/Inf in loss",
+      "status": "PASS",
+      "detail": "3199 steps"
+    },
+    {
+      "name": "grad_norm finite at accumulation boundaries",
+      "status": "PASS",
+      "detail": "max=0.288"
+    },
+    {
+      "name": "cosine horizon traversed",
+      "status": "PASS",
+      "detail": "peak 1.000e-03 -> 2.700e-05"
+    },
+    {
+      "name": "parameter deltas available",
+      "status": "WARN",
+      "detail": "no before/after snapshot supplied"
+    },
+    {
+      "name": "diagnosis AUROC(q, corruption_mask) above chance",
+      "status": "PASS",
+      "detail": "AUROC=0.6202"
+    },
+    {
+      "name": "diagnosis AUROC sanity floor (0.6)",
+      "status": "PASS",
+      "detail": "AUROC=0.6202 -- sanity check only, not a paper claim"
+    },
+    {
+      "name": "q has not collapsed to a constant",
+      "status": "FAIL",
+      "detail": "q_std=4.000e-04"
+    },
+    {
+      "name": "q separates damaged from untouched tokens",
+      "status": "FAIL",
+      "detail": "pos=0.7570 neg=0.7571"
+    },
+    {
+      "name": "recovery improves on its input (d_final < d_input)",
+      "status": "PASS",
+      "detail": "d_input=0.0864 d_final=0.072 gain_total=+0.0089 (need > 0.005)"
+    },
+    {
+      "name": "residual gate probed",
+      "status": "WARN",
+      "detail": "gate value not supplied"
+    }
+  ],
+  "metrics": {
+    "updates_logged": 199.0,
+    "micro_steps_logged": 3199.0,
+    "lr_first": 0.0,
+    "lr_last": 2.7e-05,
+    "lr_min_seen": 0.0,
+    "lr_max_seen": 0.001,
+    "AUROC(q, mask)": 0.6202,
+    "AUPRC(q, mask)": 0.0608,
+    "q_std": 0.0004,
+    "q_pos_mean": 0.757,
+    "q_neg_mean": 0.7571,
+    "Error/d_input": 0.0864,
+    "Error/d_before": 0.0863,
+    "Error/d_after": 0.072,
+    "Error/gain_total": 0.0089,
+    "Error/gain_refiner": 0.0002
+  },
+  "deltas": {},
+  "notes": []
+}

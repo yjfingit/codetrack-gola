@@ -1,0 +1,78 @@
+[
+  {
+    "trial": "seed45",
+    "steps": 1599,
+    "loss_last": 9.2867,
+    "loss_min": 8.1712,
+    "loss_first": 13.789,
+    "diag": {
+      "Loss/diag": 1.5886,
+      "Loss/rec": 0.0065,
+      "Loss/gain": 0.0234,
+      "Error/q_std": 0.0089,
+      "Error/d_input": 0.0972,
+      "Error/d_after": 0.0848,
+      "Error/gain_total": 0.0132,
+      "Error/q_mean": 0.7756
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "seed44",
+    "steps": 1599,
+    "loss_last": 9.8346,
+    "loss_min": 8.1228,
+    "loss_first": 13.0499,
+    "diag": {
+      "Loss/diag": 1.5824,
+      "Loss/rec": 0.0046,
+      "Loss/gain": 0.0321,
+      "Error/q_std": 0.0075,
+      "Error/d_input": 0.1284,
+      "Error/d_after": 0.1076,
+      "Error/gain_total": 0.0185,
+      "Error/q_mean": 0.7782
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "seed43",
+    "steps": 1599,
+    "loss_last": 9.8509,
+    "loss_min": 8.4137,
+    "loss_first": 11.8907,
+    "diag": {
+      "Loss/diag": 1.5815,
+      "Loss/rec": 0.0086,
+      "Loss/gain": 0.0363,
+      "Error/q_std": 0.008,
+      "Error/d_input": 0.1557,
+      "Error/d_after": 0.1122,
+      "Error/gain_total": 0.0157,
+      "Error/q_mean": 0.7782
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  },
+  {
+    "trial": "seed42",
+    "steps": 1599,
+    "loss_last": 9.9274,
+    "loss_min": 8.6199,
+    "loss_first": 12.0011,
+    "diag": {
+      "Loss/diag": 1.5852,
+      "Loss/rec": 0.0043,
+      "Loss/gain": 0.0281,
+      "Error/q_std": 0.0084,
+      "Error/d_input": 0.1384,
+      "Error/d_after": 0.1084,
+      "Error/gain_total": 0.0126,
+      "Error/q_mean": 0.7773
+    },
+    "nan": 0,
+    "grad_norm_last": null
+  }
+]

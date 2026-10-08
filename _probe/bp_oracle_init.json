@@ -1,0 +1,39 @@
+{
+  "probe": "oracle_gate_v1",
+  "checkpoint": "None",
+  "topk": 32,
+  "diffusion_enabled": false,
+  "damage_region": [
+    84,
+    140,
+    84,
+    140
+  ],
+  "damage_fraction": 0.150390625,
+  "results": {
+    "learned": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02766650915145874,
+      "gain_total": -8.731149137020111e-08,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07398323714733124,
+      "gain_damage": -4.567109002096004e-08
+    },
+    "oracle_soft": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02766643837094307,
+      "gain_total": -1.6018748993928966e-08,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07398328930139542,
+      "gain_damage": -1.0202457190189307e-07
+    },
+    "oracle_hard": {
+      "d_input": 0.027666419744491577,
+      "d_final": 0.02766645886003971,
+      "gain_total": -3.5390257835388184e-08,
+      "d_input_damage": 0.07398319244384766,
+      "d_final_damage": 0.07398342341184616,
+      "gain_damage": -2.35322232811086e-07
+    }
+  }
+}

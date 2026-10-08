@@ -1,0 +1,77 @@
+{
+  "checks": [
+    {
+      "detail": "3199 steps",
+      "name": "no NaN/Inf in loss",
+      "status": "PASS"
+    },
+    {
+      "detail": "max=0.560",
+      "name": "grad_norm finite at accumulation boundaries",
+      "status": "PASS"
+    },
+    {
+      "detail": "0.000e+00 -> 3.000e-06",
+      "name": "cosine horizon traversed",
+      "status": "FAIL"
+    },
+    {
+      "detail": "no before/after snapshot supplied",
+      "name": "parameter deltas available",
+      "status": "WARN"
+    },
+    {
+      "detail": "AUROC=0.5634",
+      "name": "diagnosis AUROC(q, corruption_mask) above chance",
+      "status": "PASS"
+    },
+    {
+      "detail": "AUROC=0.5634 -- sanity check only, not a paper claim",
+      "name": "diagnosis AUROC sanity floor (0.6)",
+      "status": "WARN"
+    },
+    {
+      "detail": "q_std=1.000e-04",
+      "name": "q has not collapsed to a constant",
+      "status": "FAIL"
+    },
+    {
+      "detail": "pos=0.1967 neg=0.1967",
+      "name": "q separates damaged from untouched tokens",
+      "status": "FAIL"
+    },
+    {
+      "detail": "d_input=0.1095 d_final=0.1108 gain_total=-0.0003 (need > 0.005)",
+      "name": "recovery improves on its input (d_final < d_input)",
+      "status": "FAIL"
+    },
+    {
+      "detail": "gate value not supplied",
+      "name": "residual gate probed",
+      "status": "WARN"
+    }
+  ],
+  "decision": "NO-GO",
+  "deltas": {},
+  "metrics": {
+    "AUPRC(q, mask)": 0.0376,
+    "AUROC(q, mask)": 0.5634,
+    "Error/d_after": 0.1108,
+    "Error/d_before": 0.1094,
+    "Error/d_input": 0.1095,
+    "Error/gain_refiner": 0.0002,
+    "Error/gain_total": -0.0003,
+    "lr_first": 0.0,
+    "lr_last": 3e-06,
+    "lr_max_seen": 0.0001,
+    "lr_min_seen": 0.0,
+    "micro_steps_logged": 3199.0,
+    "q_neg_mean": 0.1967,
+    "q_pos_mean": 0.1967,
+    "q_std": 0.0001,
+    "updates_logged": 199.0
+  },
+  "name": "gpu2_up005",
+  "notes": [],
+  "stage": 1
+}

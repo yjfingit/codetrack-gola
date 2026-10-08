@@ -1,0 +1,16 @@
+# CodeTrack research-ratchet H2: residual output-scale scan, 400 updates per arm.
+#
+# Hypothesis H2: up_init_std=0.02 injects too much untrained residual energy, while an
+# intermediate small non-zero output scale preserves gradients and lets the denoiser learn a
+# positive correction faster.
+# Falsifiable prediction: the 0.005/0.01 arms beat both 0.0025 and 0.02 in the final 80-update
+# window, with gain_total > 0.005 and finite loss/gradients.
+# If the ranking is flat or no arm approaches the gain gate, H2 is rejected and the next round
+# targets the recovery objective/normalization rather than initialization scale.
+#
+# Shared: effective batch 16 x accumulation 8 = 128; 400 updates = 51200 samples.
+
+gpu1_up0025|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.0025,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=32,sched_warmup_updates=32,samples_per_epoch=51200
+gpu2_up005|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.005,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=32,sched_warmup_updates=32,samples_per_epoch=51200
+gpu3_up010|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.01,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=32,sched_warmup_updates=32,samples_per_epoch=51200
+gpu4_up020|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,up_init_std=0.02,global_batch_size=16,grad_accumulation_steps=8,max_updates=400,t_initial_updates=400,warmup_updates=32,sched_warmup_updates=32,samples_per_epoch=51200

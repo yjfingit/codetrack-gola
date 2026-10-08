@@ -1,0 +1,6 @@
+# H7 sign-fix validation: q is now damage severity and recovery routes centered excess q.
+# 50 calibrated updates per arm, identical baseline except learning rate.
+gpu1_lr5e5|lr=5e-5,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu2_lr1e4|lr=1e-4,lambda_gain=0.4,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu3_gain08|lr=5e-5,lambda_gain=0.8,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
+gpu4_gain02|lr=5e-5,lambda_gain=0.2,lambda_align=0.1,lambda_pres=0.02,diagnosis_alpha=0.5,global_batch_size=16,grad_accumulation_steps=8,max_updates=50,t_initial_updates=50,warmup_updates=5,sched_warmup_updates=5,samples_per_epoch=6400
