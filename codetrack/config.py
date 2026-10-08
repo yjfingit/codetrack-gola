@@ -127,6 +127,11 @@ class CodeTrackConfig:
     template_gate_hidden: int = 64
     template_threshold: float = 0.5       # tau_c
     gola_update_threshold: float = 0.84   # official score threshold
+    # Number of consecutive trusted frames required before a provisional candidate is
+    # allowed to update the online template.  A value of 2 blocks single-frame poisoning
+    # while preserving recovery after a short confirmation.
+    commit_confirmation_frames: int = 1
+    safety_quality_enabled: bool = False
 
     # ---- block 4/5: temporal memory -----------------------------------------
     memory_enabled: bool = True

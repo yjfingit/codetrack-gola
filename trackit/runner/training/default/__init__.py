@@ -226,7 +226,8 @@ class DefaultTrainer(Runner):
                 if criterion_output.metrics is None:
                     metrics['loss'] = criterion_output.loss.item()
                 else:
-                    metrics['loss'] = sum(criterion_output.metrics.values())
+                    # Diagnostics (AUROC, feature distances, etc.) are not loss terms.
+                    metrics['loss'] = criterion_output.loss.detach().item()
                     metrics.update(criterion_output.metrics)
                 if criterion_output.extra_metrics is not None:
                     # Reserved control tensors are not scalar metrics and must not enter the

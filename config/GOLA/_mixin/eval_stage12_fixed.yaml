@@ -1,0 +1,6 @@
+- path: model.codetrack.topk_tokens
+  value: 16
+- path: model.codetrack.freeze_vote_bias
+  value: true
+- path: model.codetrack.center_bp_logits
+  value: true

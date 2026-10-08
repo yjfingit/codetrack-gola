@@ -49,6 +49,13 @@ def main(runtime_vars):
 
     config = load_config(runtime_vars)
 
+    if config.get('causal20_entrypoint', False):
+        # Dispatch after the existing torchrun spawn path, but before constructing the
+        # legacy random-pair application. The causal runner owns raw ordered video,
+        # TBPTT, sequence-isolated OPE and resumable checkpoints.
+        from tools.train_final20_causal import run_from_runtime
+        return run_from_runtime(runtime_vars)
+
     context = init_global_context(runtime_vars, config)
 
     with context:

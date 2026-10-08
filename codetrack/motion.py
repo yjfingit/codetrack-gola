@@ -485,6 +485,7 @@ class TemporalMemory(nn.Module):
                 admission_score: Optional[torch.Tensor] = None,
                 admit: bool = True,
                 mahalanobis: Optional[torch.Tensor] = None,
+                detach_memory: bool = True,
                 ) -> Dict[str, torch.Tensor]:
         """``tokens`` (B, N, C); ``reliability`` (B, N) in [0,1]; ``target_mask`` (B, N)
         boolean/float marking the target patches (drives the masked pooling);
@@ -576,8 +577,8 @@ class TemporalMemory(nn.Module):
         prior = self.base_prior.to(mod.dtype) + mod.reshape(b, self.tokens, self.memory_dim)
 
         # Detached: the bank is a buffer, not a parameterised path.
-        memory_out = mem.detach()                                   # (B, F, D)
-        memory_rel_out = mem_rel.detach()                           # (B, F, 1)
+        memory_out = mem.detach() if detach_memory else mem
+        memory_rel_out = mem_rel.detach() if detach_memory else mem_rel
 
         # Reliability-weighted read-out over the bank.  Every factor is given an explicit
         # trailing axis before multiplying: (B,F,1) * (B,F) would otherwise be read as

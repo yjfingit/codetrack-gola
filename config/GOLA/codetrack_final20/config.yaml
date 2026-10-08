@@ -1,0 +1,112 @@
+causal20_entrypoint: true
+name: CodeTrack causal20 raw-image curriculum
+common:
+  template_size:
+  - 112
+  - 112
+  search_region_size:
+  - 224
+  - 224
+  template_feat_size:
+  - 8
+  - 8
+  search_region_feat_size: &id001
+  - 16
+  - 16
+  response_map_size: *id001
+  template_feat_data_layout: NLC
+  interpolation_mode: bilinear
+  interpolation_align_corners: false
+  normalization: mm
+model:
+  type: dinov2
+  backbone:
+    type: DINOv2
+    parameters:
+      name: ViT-B/14
+      acc: default
+  lora:
+    r: 64
+    alpha: 64
+    dropout: 0.1
+    use_rslora: false
+  num_vpt_tokens: 10
+  adapter_reduction_factor: 16
+  codetrack:
+    enabled: true
+    z_len: 64
+    x_len: 256
+    dim: 768
+    grid: 16
+    mid_dim: 128
+    num_checks: 64
+    h_links_per_check: 12
+    h_min_col_degree: 3
+    h_locality_window: 5
+    h_layout: random
+    h_free_edge_frac: 0.25
+    h_seed: 1234
+    syndrome_hidden: 128
+    decoder_type: neural_bp
+    bp_iterations: 3
+    bp_damping: 0.5
+    abstain_enabled: false
+    abstain_threshold: 0.6
+    syndrome_cos: true
+    detection_prior: 0.2
+    syndrome_logit_gain: 1.0
+    syndrome_gain_calibration: false
+    motion_enabled: true
+    motion_process_noise: 0.01
+    motion_measurement_noise: 0.04
+    memory_enabled: true
+    memory_frames: 3
+    memory_tokens: 8
+    memory_dim: 128
+    topk_tokens: 32
+    num_neighbours: 8
+    refiner_hidden: 256
+    refiner_dropout: 0.1
+    refiner_heads: 4
+    residual_gate_init: -2.0
+    up_init_std: 0.002
+    motion_bias_normalise: true
+    motion_bias_scale: 0.5
+    satr_rounds: 3
+    template_protection: true
+    template_threshold: 0.5
+    commit_confirmation_frames: 2
+    gola_update_threshold: 0.84
+    w_track_corr: 1.0
+    w_track_clean: 0.25
+    lambda_diag: 0.5
+    lambda_rec: 0.2
+    lambda_align: 0.2
+    lambda_pres: 0.01
+    lambda_mem: 0.1
+    lambda_gate: 0.1
+    lambda_motion: 0.2
+    diagnosis_alpha: 0.5
+    causal_q_target_enabled: false
+    causal_q_target_tokens: 256
+    causal_q_target_temperature: 2.0
+    causal_q_target_min_ratio: 0.25
+    corruption_enabled: true
+    corruption_image_prob: 0.1
+    corruption_token_prob: 0.08
+    corruption_token_ratio: 0.4
+    corruption_severity: 0.4
+    accept_enabled: false
+    accept_score_delta: 0.0
+    adaptive_route_enabled: false
+    adaptive_route_z: 1.0
+    residual_clip_ratio: 0.05
+    soft_route_training: false
+    match_inference_route_training: true
+    clip_length: 8
+    memory_tbptt_steps: 4
+    scheduled_sampling_prob: 0.5
+    nis_threshold: 3.64
+    score_reject_threshold: 0.4
+    safety_quality_enabled: true
+    backbone_scope: []

@@ -149,6 +149,9 @@ class CodeTrack(nn.Module):
         # ``head`` is the *original* GOLA head, borrowed (not copied) so that the
         # CodeTrack path and the baseline path share exactly one head instance.
         self.head = head
+        if cfg.safety_quality_enabled:
+            from .safety import CandidateQualityHead
+            self.quality_head = CandidateQualityHead(cfg.dim)
         self._last_decision: Optional[Dict[str, torch.Tensor]] = None
         # per-sequence state (also cleared by ``reset_sequence``)
         self._state: Dict[str, Optional[torch.Tensor]] = {"memory": None, "memory_rel": None}
@@ -158,6 +161,10 @@ class CodeTrack(nn.Module):
         # so this is the only legitimate observation the Kalman filter can be given, and
         # using the previous frame (not the current prediction) keeps it causal.
         self._prev_admitted = False
+        # A template write is committed only after this many consecutive trusted frames.
+        # The first trusted frame remains provisional, which prevents one high-score
+        # corruption from entering the online template and poisoning the next crop.
+        self._commit_streak: Optional[torch.Tensor] = None
         self._gate_inputs = None
 
         self._motion_crop_params = None
@@ -175,6 +182,7 @@ class CodeTrack(nn.Module):
         self._prev_score: Optional[torch.Tensor] = None
         self._prev_box = None
         self._prev_admitted = False
+        self._commit_streak = None
         self._gate_inputs = None
         if self.memory is not None:
             self.memory._admitted_once = False
@@ -260,14 +268,25 @@ class CodeTrack(nn.Module):
         if not self.training and self.template_gate is not None and self._gate_inputs is not None:
             with torch.no_grad():
                 decision = self.template_gate(score=self._prev_score, **self._gate_inputs)
+                raw_trust = TemplateProtectionGate.should_update(
+                    decision["c_t"], self._prev_score,
+                    self.cfg.gola_update_threshold, self.cfg.template_threshold)
+                if (self._commit_streak is None or
+                        self._commit_streak.shape != raw_trust.shape):
+                    self._commit_streak = torch.zeros_like(raw_trust, dtype=torch.long)
+                self._commit_streak = torch.where(
+                    raw_trust, self._commit_streak + 1,
+                    torch.zeros_like(self._commit_streak))
+                confirmations = max(1, int(getattr(self.cfg, "commit_confirmation_frames", 2)))
+                commit = raw_trust & (self._commit_streak >= confirmations)
                 self._last_decision = {
                     "c_t": decision["c_t"], "score": self._prev_score,
                     # The updater multiplies score by quality; a binary quality implements
                     # the intended conjunction score > threshold AND c_t > tau exactly.
-                    "confidence": (decision["c_t"] > self.cfg.template_threshold).to(score.dtype),
-                    "update": TemplateProtectionGate.should_update(
-                        decision["c_t"], self._prev_score,
-                        self.cfg.gola_update_threshold, self.cfg.template_threshold),
+                    "confidence": commit.to(score.dtype),
+                    "provisional": raw_trust & ~commit,
+                    "commit": commit,
+                    "update": commit,
                 }
 
     # ------------------------------------------------------------------ forward
@@ -449,7 +468,9 @@ class CodeTrack(nn.Module):
                               mem_state.get("memory_rel"),
                               target_mask=target_mask, uncertainty=uncertainty,
                               admission_score=self._prev_score, admit=admit,
-                              mahalanobis=motion_out.get("mahalanobis"))
+                              mahalanobis=motion_out.get("mahalanobis"),
+                              detach_memory=not (self.training and preserve_state and
+                                                 self.cfg.memory_tbptt_steps > 0))
             if update_state:
                 self._state = {"memory": mem["memory"], "memory_rel": mem["memory_reliability"]}
             memory_readout = mem["readout"]
@@ -768,6 +789,9 @@ class CodeTrack(nn.Module):
 
         return {
             "X_final": X_final,
+            "candidate_quality": (self.quality_head(
+                X_t, X_final, template_ctx, q, uncertainty)
+                if self.cfg.safety_quality_enabled else None),
             "X_rec": X_rec,
             "q": q, "s": diag["s"], "s_logits": diag["s_logits"], "q_logits": diag["q_logits"],
             "q_prior": q.new_tensor(float(self.cfg.detection_prior)),

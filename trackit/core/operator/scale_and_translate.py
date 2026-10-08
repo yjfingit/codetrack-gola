@@ -69,7 +69,10 @@ def scale_and_translate(img: torch.Tensor, output_size: np.ndarray,
     else:
         output_img.zero_()
 
-    output_bbox = bbox_scale_and_translate(np.asarray((0, 0, w, h), dtype=bbox_dtype), scale, translation)
+    source_bbox = np.asarray((0, 0, w, h), dtype=bbox_dtype)
+    if np.asarray(scale).ndim == 2:
+        source_bbox = np.repeat(source_bbox[None, :], n, axis=0)
+    output_bbox = bbox_scale_and_translate(source_bbox, scale, translation)
     reverse_scale, reverse_translation = reverse_scale_and_translation_parameters(scale, translation)
     bbox_clip_to_image_boundary_(output_bbox, output_size)
     bbox_rasterize_(output_bbox)

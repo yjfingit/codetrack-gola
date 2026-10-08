@@ -1,0 +1,2 @@
+- path: "model.codetrack.abstain_threshold"
+  value: 0.8

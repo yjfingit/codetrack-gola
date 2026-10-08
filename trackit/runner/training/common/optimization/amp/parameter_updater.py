@@ -48,6 +48,8 @@ class ParameterUpdater_WithAMPSupport:
             if bad:
                 print(f"non-finite gradients before clipping: indices={bad[:12]} count={len(bad)}",
                       flush=True)
+                if not self._grad_scaler.is_enabled():
+                    raise RuntimeError("non-finite FP32 gradients; refusing optimizer update")
             if self._max_grad_norm is not None:
                 norm = torch.nn.utils.clip_grad_norm_(_get_params_from_optimizer_grouped_params(optimizer), self._max_grad_norm).item()
             elif self._always_get_grad_norm:

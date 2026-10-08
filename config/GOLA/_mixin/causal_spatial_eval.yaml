@@ -1,0 +1,4 @@
+- path: "model.codetrack.motion_enabled"
+  value: false
+- path: "model.codetrack.memory_enabled"
+  value: false

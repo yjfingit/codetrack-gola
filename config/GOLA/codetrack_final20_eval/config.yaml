@@ -1,0 +1,161 @@
+name: CodeTrack/B-224 Final20 test eval
+logging:
+  category: CodeTrack
+  tags:
+  - DINOv2
+  - base
+  - '224'
+  - GOLA
+  - CodeTrack
+  - eval
+type: GOLA
+common:
+  template_size:
+  - 112
+  - 112
+  search_region_size:
+  - 224
+  - 224
+  template_feat_size:
+  - 8
+  - 8
+  search_region_feat_size: &id001
+  - 16
+  - 16
+  response_map_size: *id001
+  template_feat_data_layout: NLC
+  interpolation_mode: bilinear
+  interpolation_align_corners: false
+  normalization: mm
+model:
+  type: dinov2
+  backbone:
+    type: DINOv2
+    parameters:
+      name: ViT-B/14
+      acc: default
+  lora:
+    r: 64
+    alpha: 64
+    dropout: 0.1
+    use_rslora: false
+  num_vpt_tokens: 10
+  adapter_reduction_factor: 16
+  codetrack: !include "../dinov2/codetrack_final20.yaml"
+run:
+  type: default
+  num_epochs: 1
+  efficiency_assessment:
+    # Profiling performs a separate latency benchmark and FLOP trace before frame 1.  It took
+    # more than six minutes on ViT-B/14 and made the smoke launcher appear hung; profiling has
+    # its own entry point (profile_model.py), so ordinary closed-loop evaluation keeps it off.
+    enabled: false
+    latency:
+      auto_mixed_precision:
+        enabled: true
+  checkpoint:
+  - type: regular
+    epoch_trigger:
+      interval: 1
+      last: true
+    resumable: false
+    max_to_keep: 5
+  task:
+    eval:
+      is_train: false
+      data: eval
+      runner: test
+      epoch_trigger:
+        last: true
+      logging:
+        interval: 100
+        local:
+          header: Eval
+      batch_collective_communication:
+        type: time
+        interval: 10
+  data:
+    eval:
+      batch_size: 192
+      num_io_threads: 0
+      num_workers: 1
+      type: siamese_tracker_eval
+      source:
+        type: dataset
+        parameters:
+          filters:
+          - type: data_cleaning.annotation_standard
+            parameters:
+              bounding_box_format: XYXY
+              bounding_box_coordinate_system: Continuous
+          datasets:
+          - name: LasHeR
+            type: MMOT
+            splits:
+            - test
+      sampler:
+        type: distributed_dynamic_scheduling
+        shuffle: true
+        repeat_times:
+        - match:
+            type: dataset
+            name_regex: LaSOT_Extension
+          value: 3
+        - match:
+            type: dataset
+            name_regex: .*
+          value: 1
+      transform:
+        type: default
+        template_area_factor: 2.0
+      result_collector:
+        async_worker: true
+        log_summary: true
+        dispatch:
+        - match:
+            name: GOT-10k
+            split: test
+          handlers:
+          - type: external/GOT10k
+            file_name: GOT10k-test
+            bbox_rasterize: true
+        - match:
+            name: TrackingNet
+            split: test
+          handlers:
+          - type: external/TrackingNet
+            file_name: TrackingNet-test
+            bbox_rasterize: true
+        - match:
+            name_regex: .*
+          handlers:
+          - type: one_pass_evaluation_compatible
+  runner:
+    test:
+      type: default_eval
+      inference_engine:
+        type: plain
+        auto_mixed_precision:
+          enabled: true
+        torch_compile:
+          enabled: false
+      evaluator:
+        type: default
+        pipeline:
+          type: one_stream_tracker
+          search_region_cropping:
+            type: simple
+            min_object_size: 10
+            area_factor: 4.0
+          post_process:
+            type: box_with_score_map
+            window_penalty: 0.45
+          template_update:
+            type: simple
+            update_threshold: 0.84
+            template_area_factor: 2.0
+          visualization: false
+          plugin:
+          - type: template_foreground_indicating_mask_generation
+          - type: online_template_foreground_indicating_mask_generation
+            template_area_factor: 2.0

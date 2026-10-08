@@ -1,0 +1,9 @@
+num_train_workers: 6
+num_val_workers: 6
+num_eval_workers: 4
+num_io_threads_per_worker: 0
+on_shared_file_system: false
+LasHeR_PATH: '/home/yangjuanfeng/lab/projects/gola-CodeTrack/_probe/LasHeR_test10/'
+RGBT234_PATH: '/home/yangjuanfeng/lab/dataset/RGBT234/'
+RGBT210_PATH: ''
+GTOT_PATH: ''

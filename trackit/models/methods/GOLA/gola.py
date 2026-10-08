@@ -4,6 +4,7 @@
 
 from typing import Tuple, List, Optional, Mapping, Any
 import os
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -15,6 +16,13 @@ from .modules.patch_embed import PatchEmbedNoSizeCheck
 from .modules.gola.apply import find_all_frozen_nn_linear_names, apply_lora
 from .modules.head.mlp import MlpAnchorFreeHead, Mlp
 from codetrack.corruption import CorruptionSchedule
+
+
+def _codetrack_autocast():
+    """Use BF16 only when explicitly enabled after a finite-gradient smoke test."""
+    if os.environ.get('CODETRACK_BF16', '0') == '1':
+        return torch.autocast('cuda', dtype=torch.bfloat16, enabled=True)
+    return nullcontext()
 
 
 class GOLA_DINOv2(nn.Module):
@@ -338,7 +346,7 @@ class GOLA_DINOv2(nn.Module):
         #
         # Still fp32: an overflowing fp16 activation becomes ``inf``, which the head then
         # propagates into every adapter gradient.
-        with torch.autocast('cuda', enabled=False):
+        with _codetrack_autocast():
             z_v, z_i = self._z_feat(z.float(), z_feat_mask)
             d_v, d_i = self._d_feat(d.float(), d_feat_mask)
             x_v_c, x_i_c = self._x_feat(x_cor.float())       # CORRUPTED (== clean in eval)
@@ -369,7 +377,7 @@ class GOLA_DINOv2(nn.Module):
         # run, the key is absent, and this falls back to ``x`` (identical behaviour to before).
         x_teacher = x_clean if x_clean is not None else x
         if needs_teacher:
-            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+            with torch.no_grad(), _codetrack_autocast():
                 x_v, x_i = self._x_feat(x_teacher.float())   # CLEAN search
                 clean_fused = torch.cat((z_v, x_v, z_i, x_i, d_v, d_i), dim=1)
                 for block in self.blocks:
@@ -379,7 +387,7 @@ class GOLA_DINOv2(nn.Module):
             clean_fused = cor_fused
 
         clean_tokens = self._codetrack_split(clean_fused)["X_TIR"]
-        with torch.set_grad_enabled(bool(needs_teacher)), torch.autocast('cuda', enabled=False):
+        with torch.set_grad_enabled(bool(needs_teacher)), _codetrack_autocast():
             clean_logits = self.head(clean_tokens)
 
         if teacher:
@@ -468,6 +476,8 @@ class GOLA_DINOv2(nn.Module):
         )
         with torch.autocast('cuda', enabled=False):
             head_out = self.head(out["X_final"].float())
+            baseline_head = (self.head(out["tokens"]["X_TIR"].float())
+                             if self.codetrack_cfg.safety_quality_enabled else None)
             causal_q_target = None
             causal_q_valid = None
             if (self.training and needs_teacher and
@@ -547,6 +557,8 @@ class GOLA_DINOv2(nn.Module):
                 self.codetrack.notify_tracking_score(score, box_xywh=box_xywh)
 
         extras = {
+            "baseline_head": baseline_head,
+            "candidate_quality": out.get("candidate_quality"),
             "teacher": clean_logits,
             "clean_tokens": clean_tokens.detach(),
             # L_diag supervision: without these two keys the criterion's diagnosis branch never

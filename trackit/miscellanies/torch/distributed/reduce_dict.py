@@ -4,6 +4,31 @@ import torch.distributed as dist
 from . import get_world_size, get_aux_process_group, get_backend, get_aux_backend
 
 
+def _aligned_names(input_dict, process_group):
+    """Union metric keys across ranks before stacking conditional diagnostics."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return sorted(input_dict.keys()), None
+    gathered = [None] * dist.get_world_size(group=process_group)
+    # ``reduce_dict_async`` builds values inside ``torch.inference_mode``.  The
+    # object collective internally writes into temporary tensors and PyTorch 2.5
+    # rejects that write when those tensors carry the inference bit.
+    with torch.inference_mode(False):
+        dist.all_gather_object(gathered, sorted(input_dict.keys()), group=process_group)
+    names = sorted({key for part in gathered for key in part})
+    counts = [sum(key in part for part in gathered) for key in names]
+    return names, counts
+
+
+def _value_for_key(input_dict, key, prototype):
+    if key in input_dict:
+        return input_dict[key]
+    if torch.is_tensor(prototype):
+        return torch.zeros_like(prototype)
+    if isinstance(prototype, np.ndarray):
+        return np.zeros_like(prototype)
+    return type(prototype)(0)
+
+
 def reduce_dict(input_dict, average=True):
     """
     Args:
@@ -22,12 +47,10 @@ def reduce_dict(input_dict, average=True):
     value_type = type(next(iter(input_dict.values())))
 
     with torch.inference_mode():
-        names = []
-        values = []
-        # sort the keys so that they are consistent across processes
-        for k in sorted(input_dict.keys()):
-            names.append(k)
-            values.append(input_dict[k])
+        process_group = get_aux_process_group()
+        names, counts = _aligned_names(input_dict, process_group)
+        prototype = next(iter(input_dict.values()))
+        values = [_value_for_key(input_dict, k, prototype) for k in names]
         if value_type is torch.Tensor:
             values = torch.stack(values, dim=0)
         else:
@@ -44,12 +67,13 @@ def reduce_dict(input_dict, average=True):
 
         if backend == 'nccl':
             values = values.cuda()
-            all_reduce_op = dist.ReduceOp.AVG if average else dist.ReduceOp.SUM
+            all_reduce_op = dist.ReduceOp.SUM
             dist.all_reduce(values, op=all_reduce_op, group=process_group)
         else:
             dist.all_reduce(values, op=dist.ReduceOp.SUM, group=process_group)
-            if average:
-                values.div_(world_size)
+        if average:
+            denominator = values.new_tensor(counts).reshape(-1, *([1] * (values.ndim - 1)))
+            values.div_(denominator)
 
         values = values.to(orig_device)
         reduced_dict = {k: v for k, v in zip(names, values)}
@@ -83,12 +107,10 @@ class reduce_dict_async:
         value_type = type(next(iter(input_dict.values())))
 
         with torch.inference_mode():
-            names = []
-            values = []
-            # sort the keys so that they are consistent across processes
-            for k in sorted(input_dict.keys()):
-                names.append(k)
-                values.append(input_dict[k])
+            process_group = get_aux_process_group()
+            names, counts = _aligned_names(input_dict, process_group)
+            prototype = next(iter(input_dict.values()))
+            values = [_value_for_key(input_dict, k, prototype) for k in names]
             if value_type is torch.Tensor:
                 values = torch.stack(values, dim=0)
             else:
@@ -105,7 +127,7 @@ class reduce_dict_async:
 
             if backend == 'nccl':
                 values = values.cuda()
-                all_reduce_op = dist.ReduceOp.AVG if average else dist.ReduceOp.SUM
+                all_reduce_op = dist.ReduceOp.SUM
                 self.async_handle = dist.all_reduce(values, op=all_reduce_op, group=process_group, async_op=True)
             else:
                 self.async_handle = dist.all_reduce(values, op=dist.ReduceOp.SUM, group=process_group, async_op=True)
@@ -115,6 +137,7 @@ class reduce_dict_async:
             self.backend = backend
             self.value_type = value_type
             self.average = average
+            self.counts = counts
 
     def get(self):
         if self.async_handle is not None:
@@ -122,9 +145,10 @@ class reduce_dict_async:
 
             with torch.inference_mode():
                 world_size = get_world_size()
-                if self.backend != 'nccl':
-                    if self.average:
-                        self.values.div_(world_size)
+                if self.average:
+                    denominator = self.values.new_tensor(self.counts).reshape(
+                        -1, *([1] * (self.values.ndim - 1)))
+                    self.values.div_(denominator)
 
                 self.values = self.values.to(self.orig_device)
                 reduced_dict = {k: v for k, v in zip(self.names, self.values)}

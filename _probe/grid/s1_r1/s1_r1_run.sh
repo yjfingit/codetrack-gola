@@ -26,7 +26,7 @@ set -u
 PROJ=/home/yangjuanfeng/lab/projects/gola-CodeTrack
 PY=/home/yangjuanfeng/lab/envs/gola/bin/python
 MIXIN_DIR="$PROJ/config/GOLA/_mixin"
-GEN="$PROJ/_probe/grid/grid_make_mixin2.py"
+GEN="$PROJ/_probe/grid/s1_r1/grid_make_mixin2.py"
 
 GRID_NAME="${1:?grid name}"
 shift || true

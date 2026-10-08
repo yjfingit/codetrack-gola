@@ -41,6 +41,11 @@ def setup_arg_parser():
     parser.add_argument('--kill_other_python_processes', action='store_true')
     parser.add_argument('--multiprocessing_start_method_spawn', action='store_true')
     parser.add_argument('--weight_path', type=str, action='append')
+    parser.add_argument('--causal_smoke', action='store_true', help='bounded causal20 integration check')
+    parser.add_argument('--local_clips', type=int, default=4, help='causal20 clips per GPU')
+    parser.add_argument('--sampling', choices=('random', 'frame_coverage'), default='frame_coverage',
+                        help='causal20 sampling recipe; frame_coverage schedules every search frame')
+    parser.add_argument('--repeats_per_sequence', type=int, default=16, help='causal20 sequence visits per epoch')
 
     return parser
 

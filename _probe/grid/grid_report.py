@@ -10,16 +10,19 @@ Writes  <grid_root>/summary.json  and  <grid_root>/summary.md
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
 
 NUM = r"[-+]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][-+]?\d+)?"
 
-# "step: 123 ... total: 1.2345"  -> keep the LAST one
+# Keep the last completed micro-step and the exact top-level ``loss`` field.  Do not match
+# ``gain_total`` as ``total`` and do not treat the expected accumulation-boundary
+# ``grad_norm: nan`` sentinel as a non-finite loss.
 RE_STEP = re.compile(rf"step[:\s]+(\d+)")
-RE_TOTAL = re.compile(rf"total[:\s]+({NUM})")
-RE_LOSS = re.compile(rf"(?:^|\s)loss[:\s]+({NUM})")
+RE_EPOCH_STEP = re.compile(r"Epoch:\s*\[(\d+)\]\s*\[\s*(\d+)/(\d+)\]")
+RE_LOSS_TOKEN = re.compile(r"(?:^|\s)loss:\s+(\S+)")
 
 # CodeTrack diagnostic keys, e.g. "Error/d_input: 0.1813"
 DIAG_KEYS = [
@@ -35,23 +38,27 @@ def scan(path: Path):
            "grad_norm_last": None}
     txt = path.read_text(errors="replace")
     for line in txt.splitlines():
+        em = RE_EPOCH_STEP.search(line)
+        if em:
+            epoch, iteration, total = map(int, em.groups())
+            rec["steps"] = max(rec["steps"], epoch * total + iteration + 1)
         m = RE_STEP.search(line)
         if m:
             rec["steps"] = max(rec["steps"], int(m.group(1)))
-        for rx, key in ((RE_TOTAL, "loss"), (RE_LOSS, "loss2")):
-            mm = rx.search(line)
-            if mm:
-                try:
-                    v = float(mm.group(1))
-                except ValueError:
+        mm = RE_LOSS_TOKEN.search(line)
+        if mm:
+            try:
+                v = float(mm.group(1))
+            except ValueError:
+                rec["nan"] += 1
+            else:
+                if not math.isfinite(v):
+                    rec["nan"] += 1
                     continue
-                if key == "loss":
-                    rec["loss_last"] = v
-                    rec["loss_min"] = v if rec["loss_min"] is None else min(rec["loss_min"], v)
-                    if rec["loss_first"] is None:
-                        rec["loss_first"] = v
-        if "nan" in line.lower() and ("grad_norm" in line or "loss" in line):
-            rec["nan"] += 1
+                rec["loss_last"] = v
+                rec["loss_min"] = v if rec["loss_min"] is None else min(rec["loss_min"], v)
+                if rec["loss_first"] is None:
+                    rec["loss_first"] = v
         for k in DIAG_KEYS:
             mm = re.search(rf"{re.escape(k)}[:\s=]+({NUM})", line)
             if mm:
